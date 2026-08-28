@@ -13,6 +13,7 @@ import { NoticeModal } from './components/NoticeModal';
 import { PublicRoomsModal } from './components/PublicRoomsModal';
 import { ShareModal } from './components/ShareModal';
 import { ResultModal } from './components/ResultModal';
+import { LegalDocumentModal, LegalDocType } from './components/LegalDocumentModal';
 import { UserStats, GameRoom, Player, ChatMessage, WordChainItem } from './types';
 import { supabase } from './lib/supabaseClient';
 import { sounds } from './lib/soundEffects';
@@ -70,6 +71,13 @@ export function App() {
   const [isPublicRoomsOpen, setIsPublicRoomsOpen] = useState(false);
   const [isShareOpen, setIsShareOpen] = useState(false);
   const [isGameOverOpen, setIsGameOverOpen] = useState(false);
+  const [isLegalDocOpen, setIsLegalDocOpen] = useState(false);
+  const [legalDocType, setLegalDocType] = useState<LegalDocType>('TERMS');
+
+  const handleOpenLegalDoc = (type: LegalDocType) => {
+    setLegalDocType(type);
+    setIsLegalDocOpen(true);
+  };
 
   // Supabase Realtime channel ref
   const channelRef = useRef<any>(null);
@@ -804,30 +812,74 @@ export function App() {
         </div>
       </main>
 
-      {/* Global Footer with National Institute of Korean Language & CCL 2.0 Attribution */}
+      {/* Global Footer with National Institute of Korean Language & Legal Documentation */}
       {!activeRoom && (
-        <footer className="border-t border-slate-200/80 bg-white/70 backdrop-blur-md py-6 px-4 sm:px-8 mt-auto">
-          <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-slate-500">
-            <div className="flex flex-col sm:flex-row items-center gap-2 text-center sm:text-left">
-              <span className="font-bold text-slate-700">끝잇기 (Kkeutitgi)</span>
-              <span className="hidden sm:inline">•</span>
-              <span>
-                본 서비스는 <strong>국립국어원 표준국어대사전 Open API</strong>를 연동하여 표준어를 실시간 검증합니다.
-              </span>
+        <footer className="border-t border-slate-200/80 bg-white/80 backdrop-blur-md py-6 px-4 sm:px-8 mt-auto">
+          <div className="max-w-7xl mx-auto flex flex-col gap-4">
+            {/* Top row: Attribution & Sources */}
+            <div className="flex flex-col md:flex-row items-center justify-between gap-3 text-xs text-slate-500">
+              <div className="flex flex-col sm:flex-row items-center gap-2 text-center sm:text-left">
+                <span className="font-bold text-slate-800">끝잇기 (Kkeutitgi)</span>
+                <span className="hidden sm:inline text-slate-300">•</span>
+                <span>
+                  본 서비스는 <strong>국립국어원 표준국어대사전 Open API</strong>를 연동하여 표준어를 실시간 검증합니다.
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3 text-[11px] text-slate-500 flex-wrap justify-center">
+                <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-600 font-semibold border border-slate-200">
+                  CCL 2.0 KR (저작자표시-동일조건변경허락)
+                </span>
+                <a
+                  href="https://stdict.korean.go.kr"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-slate-500 hover:text-neutral-900 transition-colors underline underline-offset-2"
+                >
+                  국립국어원 표준국어대사전
+                </a>
+              </div>
             </div>
 
-            <div className="flex items-center gap-4 text-[11px] text-slate-400">
-              <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-600 font-semibold">
-                CCL 2.0 KR (저작자표시-동일조건변경허락)
-              </span>
-              <a
-                href="https://stdict.korean.go.kr"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="hover:text-purple-600 transition-colors"
-              >
-                국립국어원 표준국어대사전
-              </a>
+            {/* Bottom row: Formal Policy Documents Links & Copyright */}
+            <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-2 text-[11px] text-slate-500">
+              <div className="flex items-center gap-4 flex-wrap justify-center font-medium">
+                <button
+                  type="button"
+                  onClick={() => handleOpenLegalDoc('TERMS')}
+                  className="text-slate-600 hover:text-black transition-colors cursor-pointer"
+                >
+                  이용안내 및 약관
+                </button>
+                <span className="text-slate-300">|</span>
+                <button
+                  type="button"
+                  onClick={() => handleOpenLegalDoc('COPYRIGHT')}
+                  className="text-slate-600 hover:text-black transition-colors cursor-pointer"
+                >
+                  저작권 및 공공데이터 이용정책
+                </button>
+                <span className="text-slate-300">|</span>
+                <button
+                  type="button"
+                  onClick={() => handleOpenLegalDoc('API_POLICY')}
+                  className="text-slate-600 hover:text-black transition-colors cursor-pointer"
+                >
+                  API 키 사용 규정
+                </button>
+                <span className="text-slate-300">|</span>
+                <button
+                  type="button"
+                  onClick={() => handleOpenLegalDoc('PRIVACY')}
+                  className="text-slate-900 font-bold hover:underline transition-colors cursor-pointer"
+                >
+                  개인정보 처리방침
+                </button>
+              </div>
+
+              <div className="text-slate-400 text-[10px]">
+                Copyright © 2026 끝잇기 (Kkeutitgi). All rights reserved.
+              </div>
             </div>
           </div>
         </footer>
@@ -843,6 +895,13 @@ export function App() {
       <NoticeModal
         isOpen={isNoticeOpen}
         onClose={() => setIsNoticeOpen(false)}
+      />
+
+      {/* Formal Legal & Operational Document Modal (Plain White Style with Articles) */}
+      <LegalDocumentModal
+        isOpen={isLegalDocOpen}
+        onClose={() => setIsLegalDocOpen(false)}
+        initialDoc={legalDocType}
       />
 
       {/* Public Rooms / Create Room Modal (Fallback) */}

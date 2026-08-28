@@ -235,7 +235,8 @@ export async function checkWordInDictionary(
  * 국립국어원 표준국어대사전 실시간 검색 (검색할 때마다 API 요청하여 모든 동음이의어 및 다중 뜻풀이 반환)
  */
 export async function fetchDictionarySearchResults(
-  query: string
+  query: string,
+  signal?: AbortSignal
 ): Promise<{ found: boolean; items: DictionaryWord[]; attribution?: string }> {
   const trimmed = query.trim();
   if (!trimmed) {
@@ -244,7 +245,7 @@ export async function fetchDictionarySearchResults(
 
   try {
     const url = `/api/dict/search?q=${encodeURIComponent(trimmed)}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { signal });
     if (res.ok) {
       const data = await res.json();
       if (data.found && data.items && Array.isArray(data.items)) {
@@ -255,8 +256,24 @@ export async function fetchDictionarySearchResults(
         };
       }
     }
-  } catch (err) {
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      return { found: false, items: [] };
+    }
     console.error('Dictionary API search error:', err);
+  }
+
+  // Fallback: check local standard dictionary database
+  const localMatches = DICTIONARY_DATABASE.filter(
+    (w) => w.word === trimmed || w.word.startsWith(trimmed)
+  );
+
+  if (localMatches.length > 0) {
+    return {
+      found: true,
+      items: localMatches,
+      attribution: '표준 국어 어휘 데이터베이스',
+    };
   }
 
   return { found: false, items: [] };
@@ -267,17 +284,24 @@ export async function fetchDictionarySearchResults(
  */
 export async function exploreDictionaryWords(
   page: number = 1,
-  query: string = ''
+  query: string = '',
+  signal?: AbortSignal
 ): Promise<{ words: DictionaryWord[]; hasMore: boolean }> {
   try {
-    const res = await fetch(`/api/dict/explore?page=${page}&num=20&q=${encodeURIComponent(query)}`);
+    const res = await fetch(
+      `/api/dict/explore?page=${page}&num=20&q=${encodeURIComponent(query)}`,
+      { signal }
+    );
     if (res.ok) {
       const data = await res.json();
       if (data.words && Array.isArray(data.words)) {
         return { words: data.words, hasMore: data.hasMore !== false };
       }
     }
-  } catch (err) {
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      return { words: [], hasMore: false };
+    }
     console.error('Explore API error:', err);
   }
   return { words: [], hasMore: false };

@@ -11,6 +11,7 @@ interface DictionaryViewProps {
 
 export const DictionaryView: React.FC<DictionaryViewProps> = ({ initialSearch = '' }) => {
   const [searchQuery, setSearchQuery] = useState(initialSearch);
+  const [submittedQuery, setSubmittedQuery] = useState(initialSearch);
   
   // Real API word list (Search results or Explore list)
   const [words, setWords] = useState<DictionaryWord[]>([]);
@@ -20,83 +21,126 @@ export const DictionaryView: React.FC<DictionaryViewProps> = ({ initialSearch = 
   const [hasMore, setHasMore] = useState(true);
   const [selectedWord, setSelectedWord] = useState<DictionaryWord | null>(null);
 
-  // Ref for scroll container
+  // References for request versioning and aborting in-flight requests (Race Condition Prevention)
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const latestRequestIdRef = useRef<number>(0);
+  const currentQueryRef = useRef<string>(initialSearch);
 
-  // 1. Initial Load: Load genuine words from STDict API Explore endpoint
-  useEffect(() => {
-    let isCancelled = false;
-    const loadInitialWords = async () => {
-      setIsSearching(true);
-      try {
-        const res = await exploreDictionaryWords(1, '');
-        if (!isCancelled && res.words.length > 0) {
+  // Execute Search Function (With strict race-condition guards & cancellation)
+  const executeSearch = useCallback(async (query: string) => {
+    const trimmed = query.trim();
+    currentQueryRef.current = trimmed;
+    setSubmittedQuery(trimmed);
+
+    // Cancel any previous in-flight HTTP request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    const requestId = ++latestRequestIdRef.current;
+    setIsSearching(true);
+
+    try {
+      if (!trimmed) {
+        // If query is empty, reset to explore page 1
+        setExplorePage(1);
+        setHasMore(true);
+        const res = await exploreDictionaryWords(1, '', controller.signal);
+        if (requestId === latestRequestIdRef.current && res.words.length > 0) {
           setWords(res.words);
           setSelectedWord(res.words[0]);
           setHasMore(res.hasMore);
         }
-      } catch (err) {
-        console.error('Failed to load initial dictionary words:', err);
-      } finally {
-        if (!isCancelled) setIsSearching(false);
+        return;
+      }
+
+      // 1. Direct call to STDict API search endpoint
+      const res = await fetchDictionarySearchResults(trimmed, controller.signal);
+      
+      // If a newer search was initiated while waiting, ignore this response
+      if (requestId !== latestRequestIdRef.current) {
+        return;
+      }
+
+      if (res.found && res.items.length > 0) {
+        // Sort items so exact matches come first
+        const sorted = [...res.items].sort((a, b) => {
+          if (a.word === trimmed && b.word !== trimmed) return -1;
+          if (b.word === trimmed && a.word !== trimmed) return 1;
+          return 0;
+        });
+
+        setWords(sorted);
+        setSelectedWord(sorted[0]);
+        setHasMore(false);
+      } else {
+        // 2. If exact match not found, try start/explore prefix match
+        const exploreRes = await exploreDictionaryWords(1, trimmed, controller.signal);
+        if (requestId !== latestRequestIdRef.current) return;
+
+        if (exploreRes.words.length > 0) {
+          setWords(exploreRes.words);
+          setSelectedWord(exploreRes.words[0]);
+          setHasMore(exploreRes.hasMore);
+        } else {
+          setWords([]);
+          setSelectedWord(null);
+          setHasMore(false);
+        }
+      }
+    } catch (err: any) {
+      if (err.name !== 'AbortError' && requestId === latestRequestIdRef.current) {
+        console.error('STDict API search error:', err);
+        setWords([]);
+      }
+    } finally {
+      if (requestId === latestRequestIdRef.current) {
+        setIsSearching(false);
+      }
+    }
+  }, []);
+
+  // 1. Initial Load: Load genuine words from STDict API Explore endpoint
+  useEffect(() => {
+    if (initialSearch) {
+      setSearchQuery(initialSearch);
+      executeSearch(initialSearch);
+    } else {
+      executeSearch('');
+    }
+
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
       }
     };
+  }, [initialSearch, executeSearch]);
 
-    if (!initialSearch) {
-      loadInitialWords();
-    }
-  }, [initialSearch]);
-
-  // 2. Real-time API Search: Every time searchQuery changes, query National Institute of Korean Language STDict API
+  // 2. Debounced search on typing
   useEffect(() => {
     const trimmed = searchQuery.trim();
-    if (!trimmed) {
-      // Reset to explore list if query is cleared
-      setExplorePage(1);
-      setHasMore(true);
-      exploreDictionaryWords(1, '').then((res) => {
-        if (res.words.length > 0) {
-          setWords(res.words);
-          setSelectedWord(res.words[0]);
-        }
-      });
+    if (trimmed === currentQueryRef.current) {
       return;
     }
 
-    setIsSearching(true);
-    const timer = setTimeout(async () => {
-      try {
-        // Direct call to STDict API search endpoint
-        const res = await fetchDictionarySearchResults(trimmed);
-        if (res.found && res.items.length > 0) {
-          setWords(res.items);
-          setSelectedWord(res.items[0]);
-          setHasMore(false);
-        } else {
-          // If exact match not found, try start/explore match for prefix
-          const exploreRes = await exploreDictionaryWords(1, trimmed);
-          if (exploreRes.words.length > 0) {
-            setWords(exploreRes.words);
-            setSelectedWord(exploreRes.words[0]);
-            setHasMore(exploreRes.hasMore);
-          } else {
-            setWords([]);
-            setSelectedWord(null);
-            setHasMore(false);
-          }
-        }
-      } catch (err) {
-        console.error('STDict API search error:', err);
-        setWords([]);
-      } finally {
-        setIsSearching(false);
-      }
-    }, 180);
+    const timer = setTimeout(() => {
+      executeSearch(trimmed);
+    }, 250);
 
     return () => clearTimeout(timer);
-  }, [searchQuery]);
+  }, [searchQuery, executeSearch]);
 
-  // 3. Infinite Scroll: Load more words from API when scrolled near bottom
+  // 3. Form Submit (Immediate search on Enter or button click)
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    sounds.playPop();
+    executeSearch(searchQuery.trim());
+  };
+
+  // 4. Infinite Scroll: Load more words from API when scrolled near bottom (only in explore mode)
   const loadMoreWords = useCallback(async () => {
     if (isLoadingMore || !hasMore || searchQuery.trim().length > 0) return;
 
@@ -144,6 +188,11 @@ export const DictionaryView: React.FC<DictionaryViewProps> = ({ initialSearch = 
     sounds.playPop();
   };
 
+  const handleClear = () => {
+    setSearchQuery('');
+    executeSearch('');
+  };
+
   return (
     <div className="flex flex-col gap-6 max-w-6xl mx-auto">
       {/* Main Container: Search & List (Left 2 Cols) + Detailed View (Right 1 Col) */}
@@ -151,38 +200,53 @@ export const DictionaryView: React.FC<DictionaryViewProps> = ({ initialSearch = 
         {/* Left 2 Cols: Unified Search & Homonym/Word List */}
         <div className="lg:col-span-2 flex flex-col gap-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-4 flex flex-col gap-3">
-            {/* Search Input (Sends real API request on every search) */}
-            <div className="relative">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="국립국어원 표준국어대사전 단어 검색 (예: 배, 밤, 눈, 차, 나무, 자동차...)"
-                className="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500 text-xs font-semibold"
-                autoFocus
-              />
-              {searchQuery && (
-                <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
-                  title="검색어 지우기"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              )}
-            </div>
+            {/* Search Input Form (Instant Enter Key + Button + Debounced Real-time Query) */}
+            <form onSubmit={handleSubmit} className="relative flex items-center gap-2">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="국립국어원 표준국어대사전 단어 검색 (예: 가희, 배, 밤, 눈, 나무...)"
+                  className="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500 text-xs font-semibold"
+                  autoFocus
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={handleClear}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                    title="검색어 지우기"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+
+              <button
+                type="submit"
+                className="px-5 py-3 rounded-xl bg-purple-700 hover:bg-purple-800 active:scale-95 text-white text-xs font-bold transition-all shadow-xs shrink-0 cursor-pointer flex items-center gap-1.5"
+              >
+                {isSearching ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Search className="w-3.5 h-3.5" />
+                )}
+                <span>검색</span>
+              </button>
+            </form>
 
             {/* Status Line: Real-time API Feedback & Word Count */}
             <div className="flex items-center justify-between px-1 text-xs">
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-extrabold text-slate-800">
-                  {searchQuery ? `"${searchQuery}" 검색 결과` : '전체 단어 목록'}
+                  {submittedQuery ? `"${submittedQuery}" 검색 결과` : '전체 단어 목록'}
                 </span>
                 <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 font-extrabold text-[11px]">
                   {words.length}개 항목
                 </span>
-                {searchQuery && words.length > 1 && (
+                {submittedQuery && words.length > 1 && (
                   <span className="text-[11px] text-slate-400 font-medium hidden sm:inline">
                     (동음이의어가 각각 별도 항목으로 표시됩니다)
                   </span>
@@ -190,7 +254,7 @@ export const DictionaryView: React.FC<DictionaryViewProps> = ({ initialSearch = 
               </div>
 
               {isSearching && (
-                <div className="flex items-center gap-1.5 text-purple-600 font-bold text-xs animate-pulse">
+                <div className="flex items-center gap-1.5 text-purple-600 font-bold text-xs animate-pulse shrink-0">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   <span>국립국어원 API 실시간 조회 중...</span>
                 </div>
@@ -281,7 +345,7 @@ export const DictionaryView: React.FC<DictionaryViewProps> = ({ initialSearch = 
                 })}
 
                 {/* Infinite Scroll Indicator (when not actively searching a specific term) */}
-                {!searchQuery && (
+                {!submittedQuery && (
                   <div className="col-span-full py-3 flex items-center justify-center text-xs text-slate-400 font-semibold gap-2">
                     {isLoadingMore ? (
                       <div className="flex items-center gap-1.5 text-purple-600">
@@ -306,7 +370,7 @@ export const DictionaryView: React.FC<DictionaryViewProps> = ({ initialSearch = 
                 <span className="text-xs font-semibold text-slate-600">
                   {isSearching
                     ? '국립국어원 표준국어대사전에서 단어를 검색하고 있습니다...'
-                    : `"${searchQuery}"에 해당하는 표준 단어가 없습니다.`}
+                    : `"${submittedQuery || searchQuery}"에 해당하는 표준 단어가 없습니다.`}
                 </span>
                 {!isSearching && (
                   <p className="text-[11px] text-slate-400">

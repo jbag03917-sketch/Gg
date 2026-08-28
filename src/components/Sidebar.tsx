@@ -66,21 +66,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
 
-        {/* Gem & Coin Balances */}
+        {/* Game Record Summary */}
         <div className="w-full border-t border-slate-100 pt-3 flex flex-col gap-2">
           <div className="flex items-center justify-between text-xs font-bold px-1">
-            <div className="flex items-center gap-2 text-purple-600">
-              <span className="w-5 h-5 rounded-full bg-purple-100 flex items-center justify-center text-xs">🔮</span>
-              <span>보석</span>
-            </div>
-            <span className="text-slate-700">{userStats.gems.toLocaleString()}</span>
+            <span className="text-slate-500">승리 횟수</span>
+            <span className="text-purple-700 font-extrabold">{userStats.wins}회</span>
           </div>
           <div className="flex items-center justify-between text-xs font-bold px-1">
-            <div className="flex items-center gap-2 text-amber-600">
-              <span className="w-5 h-5 rounded-full bg-amber-100 flex items-center justify-center text-xs">🪙</span>
-              <span>코인</span>
-            </div>
-            <span className="text-slate-700">{userStats.coins.toLocaleString()}</span>
+            <span className="text-slate-500">승률</span>
+            <span className="text-indigo-700 font-extrabold">{userStats.winRate}%</span>
+          </div>
+          <div className="flex items-center justify-between text-xs font-bold px-1">
+            <span className="text-slate-500">최고 연승</span>
+            <span className="text-emerald-600 font-extrabold">{userStats.maxStreak}연승</span>
           </div>
         </div>
       </div>

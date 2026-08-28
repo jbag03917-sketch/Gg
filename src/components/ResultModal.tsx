@@ -136,8 +136,8 @@ export const ResultModal: React.FC<ResultModalProps> = ({
             <div className="font-black text-sm text-purple-700">+{isWinner ? 50 : 20} EXP</div>
           </div>
           <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200/60 text-center">
-            <div className="text-[10px] text-slate-400 font-bold">획득 코인</div>
-            <div className="font-black text-sm text-amber-600">+{isWinner ? 100 : 30} 🪙</div>
+            <div className="text-[10px] text-slate-400 font-bold">내 사용 단어</div>
+            <div className="font-black text-sm text-indigo-700">{myPlayer?.wordsUsed.length || 0}개</div>
           </div>
         </div>
 

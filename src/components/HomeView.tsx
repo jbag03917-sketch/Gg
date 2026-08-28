@@ -31,12 +31,12 @@ export const HomeView: React.FC<HomeViewProps> = ({
     { title: '실시간 2~8인 멀티플레이 최적화 완료', date: '08.25' },
   ];
 
-  const popularWords = [
-    { rank: 1, word: '자동차', count: '12,843회' },
-    { rank: 2, word: '과자', count: '11,240회' },
-    { rank: 3, word: '표범', count: '9,872회' },
-    { rank: 4, word: '컴퓨터', count: '7,654회' },
-    { rank: 5, word: '라디오', count: '6,291회' },
+  const recommendedWords = [
+    { rank: 1, word: '자동차', tag: '명사 · 탈것' },
+    { rank: 2, word: '과자', tag: '명사 · 음식' },
+    { rank: 3, word: '표범', tag: '명사 · 동물' },
+    { rank: 4, word: '컴퓨터', tag: '외래어 · 기기' },
+    { rank: 5, word: '라디오', tag: '외래어 · 음향' },
   ];
 
   return (
@@ -270,35 +270,34 @@ export const HomeView: React.FC<HomeViewProps> = ({
           </div>
         </div>
 
-        {/* Today's Rare Word (오늘의 희귀 단어) */}
+        {/* Today's Featured Word (오늘의 추천 단어) */}
         <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
           <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-1.5">
-              <h3 className="font-extrabold text-base text-[#1e2022]">오늘의 희귀 단어</h3>
+              <h3 className="font-extrabold text-base text-[#1e2022]">오늘의 추천 단어</h3>
               <button
                 onClick={() => onViewWordDetail('차축')}
                 className="text-slate-400 hover:text-slate-600"
-                title="희귀 단어 설명"
+                title="단어 설명"
               >
                 <HelpCircle className="w-3.5 h-3.5" />
               </button>
             </div>
+            <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 font-bold text-[10px]">
+              표준명사
+            </span>
           </div>
 
           <div className="bg-purple-50/50 rounded-xl p-4 border border-purple-100 mb-3">
             <div className="flex items-center justify-between mb-1.5">
-              <span className="font-black text-2xl text-purple-700">차축</span>
-              <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 font-bold text-[10px]">
-                극희귀
-              </span>
+              <span className="font-black text-2xl text-purple-700">차축 (車軸)</span>
+              <span className="text-[11px] text-slate-500 font-semibold">2글자 · 한자어</span>
             </div>
-            <p className="text-xs text-slate-600 font-medium mb-3">
-              오늘 단 7번 사용된 단어예요!
+            <p className="text-xs text-slate-600 font-medium mb-2 leading-relaxed">
+              수레나 자동차 바퀴의 중심에 끼우는 굴대.
             </p>
-
-            <div className="flex items-center justify-between text-xs font-bold pt-2 border-t border-purple-100/80">
-              <span className="text-slate-500">사용 횟수</span>
-              <span className="text-purple-700">7회</span>
+            <div className="text-[11px] text-purple-600 font-semibold">
+              다음 시작 글자: <span className="font-bold">축</span> (축구공, 축제 등)
             </div>
           </div>
 
@@ -308,17 +307,17 @@ export const HomeView: React.FC<HomeViewProps> = ({
             }}
             className="w-full py-2.5 px-3 rounded-xl border border-slate-200 hover:bg-slate-50 text-xs font-bold text-[#1e2022] flex items-center justify-center gap-1 transition-colors cursor-pointer"
           >
-            <span>단어 사전에서 보기</span>
+            <span>단어 사전에서 확인하기</span>
             <ArrowRight className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        {/* Popular Words TOP 5 (인기 단어 TOP 5) */}
+        {/* Recommended Words TOP 5 (추천 단어) */}
         <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-5">
-          <h3 className="font-extrabold text-base text-[#1e2022] mb-3">인기 단어 TOP 5</h3>
+          <h3 className="font-extrabold text-base text-[#1e2022] mb-3">끝말잇기 주요 단어</h3>
 
           <div className="flex flex-col gap-2">
-            {popularWords.map((item) => (
+            {recommendedWords.map((item) => (
               <button
                 key={item.rank}
                 onClick={() => onViewWordDetail(item.word)}
@@ -343,7 +342,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
                   </span>
                 </div>
                 <span className="text-[11px] font-semibold text-slate-400">
-                  {item.count}
+                  {item.tag}
                 </span>
               </button>
             ))}

@@ -21,8 +21,6 @@ const INITIAL_STATS: UserStats = {
   nickname: `손님${Math.floor(1000 + Math.random() * 9000)}`,
   level: 1,
   exp: 0,
-  coins: 100,
-  gems: 10,
   avatarColor: 'white',
   totalGames: 0,
   wins: 0,
@@ -32,46 +30,6 @@ const INITIAL_STATS: UserStats = {
   maxStreak: 0,
   wordsHistory: [],
 };
-
-// Initial public rooms for quick browse
-const INITIAL_PUBLIC_ROOMS: GameRoom[] = [
-  {
-    id: '630157',
-    title: '초보자 환영! 끝말잇기 1채널',
-    hostId: 'host_1',
-    hostName: '민수',
-    status: 'WAITING',
-    currentPlayers: [
-      { id: 'host_1', nickname: '민수', avatarColor: 'mint', isHost: true, isReady: true, isAlive: true, score: 0, wordsUsed: [], level: 5 },
-    ],
-    maxPlayers: 8,
-    isPublic: true,
-    turnDuration: 5,
-    round: 1,
-    currentTurnIndex: 0,
-    usedWords: [],
-    wordChain: [],
-    createdAt: Date.now() - 60000,
-  },
-  {
-    id: '772910',
-    title: '두음법칙 고수들만 오세요 (2~8인)',
-    hostId: 'host_2',
-    hostName: '지훈',
-    status: 'WAITING',
-    currentPlayers: [
-      { id: 'host_2', nickname: '지훈', avatarColor: 'purple', isHost: true, isReady: true, isAlive: true, score: 0, wordsUsed: [], level: 12 },
-    ],
-    maxPlayers: 4,
-    isPublic: true,
-    turnDuration: 5,
-    round: 1,
-    currentTurnIndex: 0,
-    usedWords: [],
-    wordChain: [],
-    createdAt: Date.now() - 120000,
-  },
-];
 
 export function App() {
   // Local persistent user state
@@ -100,7 +58,7 @@ export function App() {
   // Navigation & View state
   const [currentTab, setCurrentTab] = useState<string>('HOME');
   const [activeRoom, setActiveRoom] = useState<GameRoom | null>(null);
-  const [publicRooms, setPublicRooms] = useState<GameRoom[]>(INITIAL_PUBLIC_ROOMS);
+  const [publicRooms, setPublicRooms] = useState<GameRoom[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [dictSearchWord, setDictSearchWord] = useState<string>('');
 
@@ -113,6 +71,64 @@ export function App() {
 
   // Supabase Realtime channel ref
   const channelRef = useRef<any>(null);
+
+  // Fetch real public rooms from server API
+  const refreshPublicRooms = async () => {
+    try {
+      const res = await fetch('/api/rooms');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.rooms)) {
+          setPublicRooms((prev) => {
+            // Keep local rooms if active, merge with server active rooms
+            const serverRooms: GameRoom[] = data.rooms.map((r: any) => ({
+              id: r.id,
+              title: r.title,
+              hostId: r.id,
+              hostName: r.hostName,
+              status: r.status || 'WAITING',
+              currentPlayers: [{
+                id: r.id,
+                nickname: r.hostName,
+                avatarColor: 'white',
+                isHost: true,
+                isReady: true,
+                isAlive: true,
+                score: 0,
+                wordsUsed: [],
+                level: 1,
+              }],
+              maxPlayers: r.maxPlayers || 8,
+              isPublic: true,
+              turnDuration: 5,
+              round: 1,
+              currentTurnIndex: 0,
+              usedWords: [],
+              wordChain: [],
+              createdAt: r.lastUpdated || Date.now(),
+            }));
+
+            // Avoid duplicating active room if already in server list
+            const merged = [...prev];
+            for (const sr of serverRooms) {
+              if (!merged.some((m) => m.id === sr.id)) {
+                merged.push(sr);
+              }
+            }
+            return merged;
+          });
+        }
+      }
+    } catch (e) {
+      console.error('Failed to fetch public rooms:', e);
+    }
+  };
+
+  useEffect(() => {
+    refreshPublicRooms();
+    const interval = setInterval(refreshPublicRooms, 5000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Save user stats on change
   useEffect(() => {
@@ -226,8 +242,24 @@ export function App() {
       },
     ]);
 
-    setPublicRooms((prev) => [newRoom, ...prev]);
+    setPublicRooms((prev) => [newRoom, ...prev.filter(r => r.id !== newRoomId)]);
     broadcastRoomEvent('SYNC_ROOM', { room: newRoom });
+
+    if (isPublic) {
+      fetch('/api/rooms/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: newRoomId,
+          title: newRoom.title,
+          hostName: newRoom.hostName,
+          playerCount: 1,
+          maxPlayers,
+          status: 'WAITING',
+          isPublic: true,
+        }),
+      }).catch(() => {});
+    }
   };
 
   // Join Room
@@ -549,7 +581,6 @@ export function App() {
         const newRate = Math.round((newWins / newTotal) * 100);
         const newStreak = isMeWinner ? prev.currentStreak + 1 : 0;
         const newMaxStreak = Math.max(prev.maxStreak, newStreak);
-        const newCoins = prev.coins + (isMeWinner ? 100 : 30);
         const newExp = prev.exp + (isMeWinner ? 50 : 20);
 
         let level = prev.level;
@@ -568,7 +599,6 @@ export function App() {
           currentStreak: newStreak,
           maxStreak: newMaxStreak,
           highestRank: isMeWinner ? 1 : 2,
-          coins: newCoins,
           exp,
           level,
         };
@@ -607,6 +637,12 @@ export function App() {
           currentPlayers: remainingPlayers,
         };
         broadcastRoomEvent('SYNC_ROOM', { room: updatedRoom });
+      } else {
+        fetch('/api/rooms/remove', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: activeRoom.id }),
+        }).catch(() => {});
       }
     }
     setActiveRoom(null);
@@ -735,6 +771,35 @@ export function App() {
           )}
         </div>
       </main>
+
+      {/* Global Footer with National Institute of Korean Language & CCL 2.0 Attribution */}
+      {!activeRoom && (
+        <footer className="border-t border-slate-200/80 bg-white/70 backdrop-blur-md py-6 px-4 sm:px-8 mt-auto">
+          <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-4 text-xs text-slate-500">
+            <div className="flex flex-col sm:flex-row items-center gap-2 text-center sm:text-left">
+              <span className="font-bold text-slate-700">끝잇기 (Kkeutitgi)</span>
+              <span className="hidden sm:inline">•</span>
+              <span>
+                본 서비스는 <strong>국립국어원 표준국어대사전 Open API</strong>를 연동하여 표준어를 검증합니다.
+              </span>
+            </div>
+
+            <div className="flex items-center gap-4 text-[11px] text-slate-400">
+              <span className="bg-slate-100 px-2 py-0.5 rounded text-slate-600 font-semibold">
+                CCL 2.0 KR (저작자표시-동일조건변경허락)
+              </span>
+              <a
+                href="https://stdict.korean.go.kr"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="hover:text-purple-600 transition-colors"
+              >
+                국립국어원 표준국어대사전
+              </a>
+            </div>
+          </div>
+        </footer>
+      )}
 
       {/* Official Rules Modal (14대 규칙) */}
       <RulesModal

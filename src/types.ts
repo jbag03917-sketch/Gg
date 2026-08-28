@@ -60,17 +60,32 @@ export interface WordChainItem {
   timestamp: number;
 }
 
+export interface WordSense {
+  senseNo?: number | string;
+  definition: string;
+  pos?: string;
+  origin?: string;
+  type?: string;
+  link?: string;
+}
+
 export interface DictionaryWord {
+  id?: string;
   word: string;
+  supNo?: string | number; // 동음이의어 구분 번호 (예: 배¹, 배²)
   pos: string; // 품사: 명사, 의존명사, 대명사 등
   meaning: string;
+  definitions?: string[]; // 다중 뜻풀이 목록
+  senses?: WordSense[]; // 상세 뜻풀이 목록
   length: number;
   firstChar: string;
   lastChar: string;
-  usageCount: number;
   isRare?: boolean;
   isAttack?: boolean; // 한방 단어
   origin?: string; // 고유어, 한자어, 외래어
+  targetCode?: number | string;
+  link?: string;
+  source?: 'STDICT' | 'WIKTIONARY' | 'LEXICON';
 }
 
 export interface UserStats {
@@ -79,8 +94,6 @@ export interface UserStats {
   avatarColor: string;
   level: number;
   exp: number;
-  gems: number;
-  coins: number;
   totalGames: number;
   wins: number;
   winRate: number;

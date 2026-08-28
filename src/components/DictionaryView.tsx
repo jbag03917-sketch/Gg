@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
-import { Search, Sparkles, BookOpen, Flame, Zap, HelpCircle, ArrowRight, ShieldCheck } from 'lucide-react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Search, Sparkles, ExternalLink, Loader2, BookOpen, Scale, X, ArrowRight } from 'lucide-react';
 import { DictionaryWord } from '../types';
-import { DICTIONARY_DATABASE, searchDictionaryWords, checkWordInDictionary } from '../lib/dictionaryData';
+import { fetchDictionarySearchResults, exploreDictionaryWords } from '../lib/dictionaryData';
 import { getValidStartingChars } from '../lib/hangulRules';
 import { sounds } from '../lib/soundEffects';
 
@@ -11,229 +11,396 @@ interface DictionaryViewProps {
 
 export const DictionaryView: React.FC<DictionaryViewProps> = ({ initialSearch = '' }) => {
   const [searchQuery, setSearchQuery] = useState(initialSearch);
-  const [activeFilter, setActiveFilter] = useState<'ALL' | 'RARE' | 'ATTACK'>('ALL');
-  const [selectedWord, setSelectedWord] = useState<DictionaryWord | null>(
-    DICTIONARY_DATABASE[0] || null
-  );
+  
+  // Real API word list (Search results or Explore list)
+  const [words, setWords] = useState<DictionaryWord[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [explorePage, setExplorePage] = useState(1);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
+  const [selectedWord, setSelectedWord] = useState<DictionaryWord | null>(null);
 
-  // Custom word test tool state
-  const [testInput, setTestInput] = useState('');
-  const [testResult, setTestResult] = useState<{ checked: boolean; valid?: boolean; info?: DictionaryWord; reason?: string }>({
-    checked: false,
-  });
+  // Ref for scroll container
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  const words = searchDictionaryWords(searchQuery, activeFilter);
+  // 1. Initial Load: Load genuine words from STDict API Explore endpoint
+  useEffect(() => {
+    let isCancelled = false;
+    const loadInitialWords = async () => {
+      setIsSearching(true);
+      try {
+        const res = await exploreDictionaryWords(1, '');
+        if (!isCancelled && res.words.length > 0) {
+          setWords(res.words);
+          setSelectedWord(res.words[0]);
+          setHasMore(res.hasMore);
+        }
+      } catch (err) {
+        console.error('Failed to load initial dictionary words:', err);
+      } finally {
+        if (!isCancelled) setIsSearching(false);
+      }
+    };
 
-  const handleTestWord = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!testInput.trim()) return;
-    const res = await checkWordInDictionary(testInput.trim());
-    setTestResult({
-      checked: true,
-      valid: res.isValid,
-      info: res.wordInfo,
-      reason: res.reason,
-    });
-    if (res.isValid) {
-      sounds.playCorrect();
-      if (res.wordInfo) setSelectedWord(res.wordInfo);
-    } else {
-      sounds.playWrong();
+    if (!initialSearch) {
+      loadInitialWords();
     }
+  }, [initialSearch]);
+
+  // 2. Real-time API Search: Every time searchQuery changes, query National Institute of Korean Language STDict API
+  useEffect(() => {
+    const trimmed = searchQuery.trim();
+    if (!trimmed) {
+      // Reset to explore list if query is cleared
+      setExplorePage(1);
+      setHasMore(true);
+      exploreDictionaryWords(1, '').then((res) => {
+        if (res.words.length > 0) {
+          setWords(res.words);
+          setSelectedWord(res.words[0]);
+        }
+      });
+      return;
+    }
+
+    setIsSearching(true);
+    const timer = setTimeout(async () => {
+      try {
+        // Direct call to STDict API search endpoint
+        const res = await fetchDictionarySearchResults(trimmed);
+        if (res.found && res.items.length > 0) {
+          setWords(res.items);
+          setSelectedWord(res.items[0]);
+          setHasMore(false);
+        } else {
+          // If exact match not found, try start/explore match for prefix
+          const exploreRes = await exploreDictionaryWords(1, trimmed);
+          if (exploreRes.words.length > 0) {
+            setWords(exploreRes.words);
+            setSelectedWord(exploreRes.words[0]);
+            setHasMore(exploreRes.hasMore);
+          } else {
+            setWords([]);
+            setSelectedWord(null);
+            setHasMore(false);
+          }
+        }
+      } catch (err) {
+        console.error('STDict API search error:', err);
+        setWords([]);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 180);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  // 3. Infinite Scroll: Load more words from API when scrolled near bottom
+  const loadMoreWords = useCallback(async () => {
+    if (isLoadingMore || !hasMore || searchQuery.trim().length > 0) return;
+
+    setIsLoadingMore(true);
+    try {
+      const nextPage = explorePage + 1;
+      const res = await exploreDictionaryWords(nextPage, '');
+
+      if (res.words.length > 0) {
+        setWords((prev) => {
+          const map = new Map<string, DictionaryWord>();
+          for (const w of prev) {
+            const key = w.id || `${w.word}-${w.supNo || ''}-${w.meaning.slice(0, 10)}`;
+            map.set(key, w);
+          }
+          for (const w of res.words) {
+            const key = w.id || `${w.word}-${w.supNo || ''}-${w.meaning.slice(0, 10)}`;
+            if (!map.has(key)) {
+              map.set(key, w);
+            }
+          }
+          return Array.from(map.values());
+        });
+        setExplorePage(nextPage);
+        setHasMore(res.hasMore);
+      } else {
+        setHasMore(false);
+      }
+    } catch (err) {
+      console.error('Failed to load more words on scroll:', err);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [isLoadingMore, hasMore, explorePage, searchQuery]);
+
+  const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const { scrollTop, clientHeight, scrollHeight } = e.currentTarget;
+    if (scrollTop + clientHeight >= scrollHeight - 80) {
+      loadMoreWords();
+    }
+  };
+
+  const handleSelectWord = (item: DictionaryWord) => {
+    setSelectedWord(item);
+    sounds.playPop();
   };
 
   return (
     <div className="flex flex-col gap-6 max-w-6xl mx-auto">
-      {/* Header Banner */}
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-xs p-6 sm:p-8 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-1">
-            <span className="px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-700 font-bold text-xs">
-              공식 사전
-            </span>
-            <h1 className="font-black text-2xl sm:text-3xl text-[#1e2022]">
-              단어 사전
-            </h1>
-          </div>
-          <p className="text-xs sm:text-sm text-slate-500 font-medium">
-            게임에 사용되는 표준 단어와 두음법칙 연결, 희귀 단어를 검색해보세요.
-          </p>
-        </div>
-
-        {/* Word Inspector Form */}
-        <form onSubmit={handleTestWord} className="w-full md:w-auto flex gap-2">
-          <input
-            type="text"
-            value={testInput}
-            onChange={(e) => {
-              setTestInput(e.target.value);
-              setTestResult({ checked: false });
-            }}
-            placeholder="단어 유효성 검사 (예: 차축, 개나리)"
-            className="px-3.5 py-2 text-xs rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500 font-medium min-w-[220px]"
-          />
-          <button
-            type="submit"
-            className="px-4 py-2 bg-[#1e2022] hover:bg-black text-white text-xs font-bold rounded-xl transition-colors shrink-0 cursor-pointer"
-          >
-            검사
-          </button>
-        </form>
-      </div>
-
-      {/* Test Result Alert if checked */}
-      {testResult.checked && (
-        <div
-          className={`p-4 rounded-2xl border text-xs font-bold flex items-center justify-between animate-in fade-in duration-150 ${
-            testResult.valid
-              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-              : 'bg-rose-50 border-rose-200 text-rose-800'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4" />
-            <span>
-              {testResult.valid
-                ? `✓ "${testInput}" 은(는) 끝잇기 게임에서 사용할 수 있는 정상 단어입니다!`
-                : `✕ "${testInput}" 은(는) ${testResult.reason || '사용할 수 없는 단어입니다.'}`}
-            </span>
-          </div>
-          {testResult.info && (
-            <span className="text-[11px] font-semibold text-emerald-700 bg-white/80 px-2 py-0.5 rounded-md">
-              {testResult.info.pos} · {testResult.info.length}글자
-            </span>
-          )}
-        </div>
-      )}
-
-      {/* Main Grid: Search & List (Left) + Detail View (Right) */}
+      {/* Main Container: Search & List (Left 2 Cols) + Detailed View (Right 1 Col) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left 2 Cols: Search & Filter List */}
+        {/* Left 2 Cols: Unified Search & Homonym/Word List */}
         <div className="lg:col-span-2 flex flex-col gap-4">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-4 flex flex-col gap-3">
-            {/* Search Input */}
+            {/* Search Input (Sends real API request on every search) */}
             <div className="relative">
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="단어 검색 (예: 자동차, 과자, 리, 녀...)"
-                className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500 text-xs font-semibold"
+                placeholder="국립국어원 표준국어대사전 단어 검색 (예: 배, 밤, 눈, 차, 나무, 자동차...)"
+                className="w-full pl-10 pr-10 py-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-purple-500 text-xs font-semibold"
+                autoFocus
               />
+              {searchQuery && (
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                  title="검색어 지우기"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
             </div>
 
-            {/* Filter Tabs */}
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setActiveFilter('ALL')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-                  activeFilter === 'ALL'
-                    ? 'bg-[#1e2022] text-white'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                전체 단어 ({DICTIONARY_DATABASE.length})
-              </button>
-              <button
-                onClick={() => setActiveFilter('RARE')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer ${
-                  activeFilter === 'RARE'
-                    ? 'bg-purple-700 text-white'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                <Flame className="w-3 h-3 text-amber-500" />
-                <span>🔥 희귀 단어</span>
-              </button>
-              <button
-                onClick={() => setActiveFilter('ATTACK')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer ${
-                  activeFilter === 'ATTACK'
-                    ? 'bg-rose-600 text-white'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                <Zap className="w-3 h-3 text-yellow-400" />
-                <span>⚡ 한방 단어</span>
-              </button>
+            {/* Status Line: Real-time API Feedback & Word Count */}
+            <div className="flex items-center justify-between px-1 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="font-extrabold text-slate-800">
+                  {searchQuery ? `"${searchQuery}" 검색 결과` : '전체 단어 목록'}
+                </span>
+                <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 font-extrabold text-[11px]">
+                  {words.length}개 항목
+                </span>
+                {searchQuery && words.length > 1 && (
+                  <span className="text-[11px] text-slate-400 font-medium hidden sm:inline">
+                    (동음이의어가 각각 별도 항목으로 표시됩니다)
+                  </span>
+                )}
+              </div>
+
+              {isSearching && (
+                <div className="flex items-center gap-1.5 text-purple-600 font-bold text-xs animate-pulse">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>국립국어원 API 실시간 조회 중...</span>
+                </div>
+              )}
             </div>
           </div>
 
-          {/* Words List */}
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-2 grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-[480px] overflow-y-auto">
-            {words.map((item) => {
-              const isSelected = selectedWord?.word === item.word;
-              const dueums = getValidStartingChars(item.lastChar);
+          {/* Word List with All Homonyms & Senses */}
+          <div
+            ref={scrollContainerRef}
+            onScroll={handleScroll}
+            className="bg-white rounded-2xl border border-slate-200 shadow-xs p-3 grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-[580px] overflow-y-auto"
+          >
+            {words.length > 0 ? (
+              <>
+                {words.map((item, idx) => {
+                  const isSelected =
+                    selectedWord &&
+                    selectedWord.word === item.word &&
+                    (selectedWord.supNo === item.supNo ||
+                      selectedWord.meaning === item.meaning ||
+                      selectedWord.id === item.id);
 
-              return (
-                <button
-                  key={item.word}
-                  onClick={() => {
-                    setSelectedWord(item);
-                    sounds.playPop();
-                  }}
-                  className={`p-3 rounded-xl text-left border transition-all flex flex-col justify-between cursor-pointer ${
-                    isSelected
-                      ? 'bg-purple-50/80 border-purple-400 shadow-xs'
-                      : 'bg-white hover:bg-slate-50 border-slate-100'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2">
-                      <span className="font-extrabold text-sm text-[#1e2022]">
-                        {item.word}
-                      </span>
-                      {item.isRare && (
-                        <span className="px-1.5 py-0.2 bg-purple-100 text-purple-700 text-[9px] font-extrabold rounded">
-                          희귀
+                  const dueums = getValidStartingChars(item.lastChar);
+                  const displaySupNo = item.supNo ? ` ${item.supNo}` : '';
+
+                  return (
+                    <button
+                      key={item.id || `${item.word}-${item.supNo || ''}-${idx}`}
+                      onClick={() => handleSelectWord(item)}
+                      className={`p-3.5 rounded-xl text-left border transition-all flex flex-col justify-between cursor-pointer ${
+                        isSelected
+                          ? 'bg-purple-50/90 border-purple-400 shadow-xs ring-2 ring-purple-300'
+                          : 'bg-white hover:bg-slate-50 border-slate-100 hover:border-slate-200'
+                      }`}
+                    >
+                      <div>
+                        {/* Word Title + SupNo (동음이의어 어깨번호) + Pos */}
+                        <div className="flex items-center justify-between mb-1.5">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="font-black text-base text-[#1e2022]">
+                              {item.word}
+                              {displaySupNo && (
+                                <sup className="text-purple-600 font-bold text-xs ml-0.5">
+                                  {displaySupNo}
+                                </sup>
+                              )}
+                            </span>
+                            <span className="px-1.5 py-0.2 bg-slate-100 text-slate-700 text-[10px] font-bold rounded">
+                              {item.pos}
+                            </span>
+                            {item.origin && item.origin !== '표준어' && (
+                              <span className="px-1.5 py-0.2 bg-purple-50 text-purple-700 text-[10px] font-bold rounded border border-purple-100">
+                                {item.origin}
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] font-semibold text-slate-400 shrink-0">
+                            {item.senses && item.senses.length > 1
+                              ? `뜻풀이 ${item.senses.length}개`
+                              : '표준어'}
+                          </span>
+                        </div>
+
+                        {/* Primary Definition */}
+                        <p className="text-xs text-slate-600 font-medium line-clamp-2 leading-relaxed">
+                          {item.meaning}
+                        </p>
+                      </div>
+
+                      {/* Footer Info: Length, Last Char & Dueum */}
+                      <div className="flex items-center justify-between mt-3 pt-2 border-t border-slate-100 text-[10px] text-slate-400 font-medium">
+                        <span>
+                          {item.length}글자 · 끝 「<strong>{item.lastChar}</strong>」
                         </span>
-                      )}
-                    </div>
-                    <span className="text-[10px] font-semibold text-slate-400">
-                      {item.usageCount.toLocaleString()}회
-                    </span>
-                  </div>
+                        {dueums.length > 1 ? (
+                          <span className="text-purple-600 font-bold">
+                            두음 연결: {dueums.join(', ')}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 flex items-center gap-0.5">
+                            상세보기 <ArrowRight className="w-2.5 h-2.5" />
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
 
-                  <p className="text-[11px] text-slate-500 font-medium line-clamp-1">
-                    {item.meaning}
-                  </p>
-
-                  <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-slate-100/60 text-[10px] text-slate-400 font-medium">
-                    <span>끝: 「{item.lastChar}」</span>
-                    {dueums.length > 1 && (
-                      <span className="text-purple-600 font-bold">
-                        두음 {dueums.join('/')}
+                {/* Infinite Scroll Indicator (when not actively searching a specific term) */}
+                {!searchQuery && (
+                  <div className="col-span-full py-3 flex items-center justify-center text-xs text-slate-400 font-semibold gap-2">
+                    {isLoadingMore ? (
+                      <div className="flex items-center gap-1.5 text-purple-600">
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>국립국어원 표준 단어를 계속 불러오는 중...</span>
+                      </div>
+                    ) : hasMore ? (
+                      <span className="text-[11px] text-slate-400">
+                        ↓ 아래로 스크롤하면 새로운 단어가 계속 추가됩니다
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-slate-400">
+                        모든 단어를 불러왔습니다.
                       </span>
                     )}
                   </div>
-                </button>
-              );
-            })}
+                )}
+              </>
+            ) : (
+              <div className="col-span-full py-16 text-center text-slate-400 flex flex-col items-center justify-center gap-2">
+                <BookOpen className="w-10 h-10 text-slate-300" />
+                <span className="text-xs font-semibold text-slate-600">
+                  {isSearching
+                    ? '국립국어원 표준국어대사전에서 단어를 검색하고 있습니다...'
+                    : `"${searchQuery}"에 해당하는 표준 단어가 없습니다.`}
+                </span>
+                {!isSearching && (
+                  <p className="text-[11px] text-slate-400">
+                    오타가 없는지 확인하거나 다른 표준어를 입력해보세요.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Right 1 Col: Selected Word Deep Inspection (Section 6 style) */}
+        {/* Right 1 Col: Selected Word Multi-definition & Homonym Deep Inspector */}
         <div className="flex flex-col gap-4">
           {selectedWord ? (
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 flex flex-col gap-4 sticky top-24">
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 flex flex-col gap-5 sticky top-20">
               <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-                <span className="text-xs font-bold text-slate-400">단어 정보</span>
-                <span className="px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-700 font-extrabold text-xs">
-                  {selectedWord.pos}
-                </span>
+                <span className="text-xs font-bold text-slate-400">국립국어원 표준 정보</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 font-extrabold text-xs">
+                    {selectedWord.pos}
+                  </span>
+                  {selectedWord.origin && (
+                    <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-bold text-xs">
+                      {selectedWord.origin}
+                    </span>
+                  )}
+                </div>
               </div>
 
               <div>
-                <h3 className="font-black text-3xl text-purple-800 tracking-tight mb-2">
-                  {selectedWord.word}
-                </h3>
-                <p className="text-xs text-slate-600 font-medium leading-relaxed bg-slate-50 p-3.5 rounded-xl border border-slate-100">
-                  {selectedWord.meaning}
-                </p>
+                <div className="flex items-baseline justify-between mb-2">
+                  <h3 className="font-black text-3xl text-purple-900 tracking-tight flex items-center gap-1.5">
+                    <span>{selectedWord.word}</span>
+                    {selectedWord.supNo && (
+                      <sup className="text-purple-600 font-extrabold text-base">
+                        {selectedWord.supNo}
+                      </sup>
+                    )}
+                  </h3>
+                  <a
+                    href={`https://stdict.korean.go.kr/search/searchResult.do?pageSize=10&searchKeyword=${encodeURIComponent(
+                      selectedWord.word
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[11px] font-bold text-purple-600 hover:text-purple-800 flex items-center gap-1 hover:underline"
+                  >
+                    <span>사전 원문</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </div>
+
+                {/* Multiple Definitions / Senses (한 단어의 여러 가지 뜻 전체 나열) */}
+                <div className="flex flex-col gap-2 mt-4">
+                  <div className="flex items-center justify-between text-xs font-extrabold text-slate-700">
+                    <span>뜻풀이 ({selectedWord.senses?.length || (selectedWord.definitions?.length ?? 1)}개)</span>
+                    {selectedWord.senses && selectedWord.senses.length > 1 && (
+                      <span className="text-[10px] text-purple-600 font-bold">다의어</span>
+                    )}
+                  </div>
+
+                  <div className="flex flex-col gap-2.5 max-h-[250px] overflow-y-auto pr-1">
+                    {selectedWord.senses && selectedWord.senses.length > 0 ? (
+                      selectedWord.senses.map((s, idx) => (
+                        <div
+                          key={idx}
+                          className="bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs text-slate-700 font-medium leading-relaxed flex flex-col gap-1.5"
+                        >
+                          <div className="flex items-center justify-between text-[11px] font-bold text-purple-700">
+                            <span>{s.senseNo ? `${s.senseNo}번째 뜻` : `${idx + 1}.`}</span>
+                            {s.pos && <span className="text-slate-400 font-semibold">[{s.pos}]</span>}
+                          </div>
+                          <p className="text-slate-800 font-medium leading-relaxed">{s.definition}</p>
+                        </div>
+                      ))
+                    ) : selectedWord.definitions && selectedWord.definitions.length > 0 ? (
+                      selectedWord.definitions.map((def, idx) => (
+                        <div
+                          key={idx}
+                          className="bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs text-slate-700 font-medium leading-relaxed"
+                        >
+                          <p className="text-slate-800 font-medium">{def}</p>
+                        </div>
+                      ))
+                    ) : (
+                      <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100 text-xs text-slate-700 font-medium leading-relaxed">
+                        {selectedWord.meaning}
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
 
-              {/* Stats Spec Table */}
+              {/* Stats Table */}
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
                   <div className="text-[10px] text-slate-400 font-semibold mb-0.5">글자 수</div>
@@ -241,7 +408,7 @@ export const DictionaryView: React.FC<DictionaryViewProps> = ({ initialSearch = 
                 </div>
 
                 <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-100">
-                  <div className="text-[10px] text-slate-400 font-semibold mb-0.5">어휘 종류</div>
+                  <div className="text-[10px] text-slate-400 font-semibold mb-0.5">어휘 어원</div>
                   <div className="font-bold text-[#1e2022]">{selectedWord.origin || '표준어'}</div>
                 </div>
 
@@ -256,16 +423,16 @@ export const DictionaryView: React.FC<DictionaryViewProps> = ({ initialSearch = 
                 </div>
               </div>
 
-              {/* Dueum rule inspection */}
+              {/* Dueum Rule Information */}
               {(() => {
                 const dueums = getValidStartingChars(selectedWord.lastChar);
                 return (
                   <div className="bg-purple-50/60 p-3 rounded-xl border border-purple-100">
-                    <div className="text-[11px] font-bold text-purple-900 mb-1 flex items-center gap-1">
+                    <div className="text-[11px] font-bold text-purple-900 mb-1.5 flex items-center gap-1">
                       <Sparkles className="w-3 h-3 text-purple-600" />
-                      <span>다음 차례 연결 가능 음절</span>
+                      <span>다음 차례 연결 가능 첫 글자</span>
                     </div>
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       {dueums.map((char) => (
                         <span
                           key={char}
@@ -284,18 +451,34 @@ export const DictionaryView: React.FC<DictionaryViewProps> = ({ initialSearch = 
                 );
               })()}
 
-              <div className="flex items-center justify-between text-xs font-bold pt-2 border-t border-slate-100 text-slate-500">
-                <span>게임 내 총 사용 횟수</span>
-                <span className="font-mono text-purple-700 font-black">
-                  {selectedWord.usageCount.toLocaleString()}회
-                </span>
+              <div className="pt-2 border-t border-slate-100 text-[11px] text-slate-400 font-medium">
+                제공: <strong>국립국어원 표준국어대사전 Open API</strong>
               </div>
             </div>
           ) : (
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-6 text-center text-slate-400 text-xs">
-              단어를 선택하면 상세 정보가 표시됩니다.
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-xs p-8 text-center text-slate-400 text-xs">
+              단어를 선택하면 다중 뜻풀이와 사전 정보가 표시됩니다.
             </div>
           )}
+        </div>
+      </div>
+
+      {/* License & Source Notice */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 p-4 shadow-xs">
+        <div className="flex items-center justify-between gap-3 text-xs text-slate-500 flex-wrap">
+          <div className="flex items-center gap-2">
+            <Scale className="w-4 h-4 text-purple-600 shrink-0" />
+            <span>국립국어원 표준국어대사전 실시간 Open API 연동 (공공누리 제2유형)</span>
+          </div>
+          <a
+            href="https://stdict.korean.go.kr"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-purple-600 hover:underline text-[11px] flex items-center gap-0.5"
+          >
+            <span>표준국어대사전 웹사이트 바로가기</span>
+            <ExternalLink className="w-3 h-3" />
+          </a>
         </div>
       </div>
     </div>

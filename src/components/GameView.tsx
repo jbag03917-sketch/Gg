@@ -4,7 +4,7 @@ import { Send, MessageCircle, AlertCircle, CheckCircle2, XCircle, BookOpen, Volu
 import { GameRoom, Player, ChatMessage, WordChainItem } from '../types';
 import { MascotAvatar } from './MascotAvatar';
 import { validateWordRules, getValidStartingChars } from '../lib/hangulRules';
-import { checkWordInDictionary, incrementWordUsage } from '../lib/dictionaryData';
+import { checkWordInDictionary } from '../lib/dictionaryData';
 import { sounds } from '../lib/soundEffects';
 
 interface GameViewProps {
@@ -115,7 +115,6 @@ export const GameView: React.FC<GameViewProps> = ({
 
     // Success!
     sounds.playCorrect();
-    incrementWordUsage(trimmed);
     onSubmitWord(
       trimmed,
       ruleRes.isDueum ?? false,

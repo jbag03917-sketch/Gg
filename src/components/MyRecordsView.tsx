@@ -29,14 +29,14 @@ export const MyRecordsView: React.FC<MyRecordsViewProps> = ({ userStats, onSelec
 
           {/* Quick Stat Badges */}
           <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3 text-xs font-bold">
-            <span className="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700">
-              보석: {userStats.gems} 🔮
-            </span>
-            <span className="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700">
-              코인: {userStats.coins} 🪙
-            </span>
             <span className="px-3 py-1.5 rounded-xl bg-purple-50 text-purple-700">
+              경험치: {userStats.exp} EXP
+            </span>
+            <span className="px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-700">
               최고 연승: {userStats.maxStreak}연승 🔥
+            </span>
+            <span className="px-3 py-1.5 rounded-xl bg-slate-100 text-slate-700">
+              최고 순위: {userStats.highestRank}위
             </span>
           </div>
         </div>

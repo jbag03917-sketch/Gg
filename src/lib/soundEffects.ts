@@ -130,6 +130,63 @@ class SoundEngine {
     osc.stop(now + 0.1);
   }
 
+  // 4-1. 플레이어 입장 알림음 (도-미-솔 상승 화음)
+  public playJoin() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
+    notes.forEach((freq, idx) => {
+      const now = this.ctx!.currentTime + idx * 0.07;
+      const osc = this.ctx!.createOscillator();
+      const gain = this.ctx!.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now);
+
+      gain.gain.setValueAtTime(0.12, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+
+      osc.connect(gain);
+      gain.connect(this.ctx!.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.2);
+    });
+  }
+
+  // 4-2. 게임 시작 효과음
+  public playGameStart() {
+    if (this.isMuted) return;
+    this.initCtx();
+    if (!this.ctx) return;
+
+    const notes = [440, 554.37, 659.25, 880]; // A4, C#5, E5, A5
+    notes.forEach((freq, idx) => {
+      const now = this.ctx!.currentTime + idx * 0.08;
+      const osc = this.ctx!.createOscillator();
+      const gain = this.ctx!.createGain();
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(freq, now);
+
+      gain.gain.setValueAtTime(0.18, now);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+
+      osc.connect(gain);
+      gain.connect(this.ctx!.destination);
+
+      osc.start(now);
+      osc.stop(now + 0.3);
+    });
+  }
+
+  // 4-3. 시간 초과 / 턴 경과 효과음
+  public playTimeout() {
+    this.playWrong();
+  }
+
   // 5. 최종 승리 팡파르
   public playVictory() {
     if (this.isMuted) return;

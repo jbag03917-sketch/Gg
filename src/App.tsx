@@ -80,8 +80,13 @@ export function App() {
     setIsLegalDocOpen(true);
   };
 
-  // Supabase Realtime channel ref
+  // Supabase Realtime channel ref & authoritative activeRoom ref
   const channelRef = useRef<any>(null);
+  const activeRoomRef = useRef<GameRoom | null>(activeRoom);
+
+  useEffect(() => {
+    activeRoomRef.current = activeRoom;
+  }, [activeRoom]);
 
   // Fetch real public rooms from server API
   const refreshPublicRooms = async () => {
@@ -190,7 +195,8 @@ export function App() {
       console.warn('Lobby SSE not available, falling back to polling:', err);
     }
 
-    const interval = setInterval(refreshPublicRooms, 3000);
+    // High frequency auto-polling (1.5s) to guarantee instant public rooms update
+    const interval = setInterval(refreshPublicRooms, 1500);
     return () => {
       clearInterval(interval);
       if (es) es.close();
@@ -222,7 +228,15 @@ export function App() {
         try {
           const data = JSON.parse(e.data);
           if (data.room) {
-            setActiveRoom(data.room);
+            setActiveRoom((prev) => {
+              if (!prev) return data.room;
+              return {
+                ...data.room,
+                currentPlayers: Array.isArray(data.room.currentPlayers) && data.room.currentPlayers.length > 0
+                  ? data.room.currentPlayers
+                  : prev.currentPlayers,
+              };
+            });
             if (data.room.status === 'FINISHED') {
               setIsGameOverOpen(true);
             }
@@ -263,7 +277,7 @@ export function App() {
           }
         }
       } catch {}
-    }, 2500);
+    }, 1800);
 
     return () => {
       clearInterval(interval);
@@ -286,7 +300,7 @@ export function App() {
 
   // Supabase Realtime Synchronization (Presence Tracking + Broadcast Events)
   useEffect(() => {
-    if (!activeRoom) {
+    if (!activeRoom?.id) {
       if (channelRef.current) {
         channelRef.current.unsubscribe();
         channelRef.current = null;
@@ -294,7 +308,8 @@ export function App() {
       return;
     }
 
-    const channelName = `kkeutitgi_room_${activeRoom.id}`;
+    const roomIdUpper = String(activeRoom.id).trim().toUpperCase();
+    const channelName = `kkeutitgi_room_${roomIdUpper}`;
     const channel = supabase.channel(channelName, {
       config: {
         broadcast: { ack: true, self: false },
@@ -306,9 +321,10 @@ export function App() {
     channel
       .on('presence', { event: 'join' }, ({ newPresences }) => {
         if (newPresences && newPresences.length > 0) {
+          sounds.playJoin();
           // If I am host, broadcast authoritative room state to the newly joined player
-          if (activeRoom.hostId === myPlayerId) {
-            broadcastRoomEvent('SYNC_ROOM', { room: activeRoom });
+          if (activeRoomRef.current?.hostId === myPlayerId) {
+            broadcastRoomEvent('SYNC_ROOM', { room: activeRoomRef.current });
           }
         }
       })
@@ -325,19 +341,197 @@ export function App() {
         if (!payload) return;
         const { type, data } = payload;
 
-        if (type === 'SYNC_ROOM' && data?.room) {
-          setActiveRoom(data.room);
+        if (type === 'PLAYER_JOINED' && data?.player) {
+          const newPlayer: Player = data.player;
+          setActiveRoom((prev) => {
+            if (!prev) return prev;
+            const exists = prev.currentPlayers.some((p) => p.id === newPlayer.id);
+            const updatedPlayers = exists
+              ? prev.currentPlayers.map((p) => (p.id === newPlayer.id ? { ...p, ...newPlayer } : p))
+              : [...prev.currentPlayers, newPlayer];
+
+            const updatedRoom: GameRoom = {
+              ...prev,
+              currentPlayers: updatedPlayers,
+            };
+
+            // If I am host, save authoritative update and broadcast back SYNC_ROOM
+            if (prev.hostId === myPlayerId) {
+              saveRoomToServer(updatedRoom);
+              setTimeout(() => {
+                broadcastRoomEvent('SYNC_ROOM', { room: updatedRoom });
+              }, 50);
+            }
+            return updatedRoom;
+          });
+
+          setChatMessages((prev) => {
+            const sysId = `join_${newPlayer.id}_${Date.now()}`;
+            if (prev.some((m) => m.id === sysId)) return prev;
+            return [
+              ...prev,
+              {
+                id: sysId,
+                senderId: 'SYSTEM',
+                senderName: '시스템',
+                text: `${newPlayer.nickname}님이 대기실에 입장하셨습니다.`,
+                timestamp: Date.now(),
+                isSystem: true,
+              },
+            ];
+          });
+          sounds.playJoin();
+        } else if (type === 'SYNC_ROOM' && data?.room) {
+          setActiveRoom((prev) => {
+            if (!prev) return data.room;
+            return {
+              ...data.room,
+              currentPlayers: Array.isArray(data.room.currentPlayers) && data.room.currentPlayers.length > 0
+                ? data.room.currentPlayers
+                : prev.currentPlayers,
+            };
+          });
           if (data.room.status === 'FINISHED') {
             setIsGameOverOpen(true);
           }
+        } else if (type === 'PLAYER_LEAVE' && data?.playerId) {
+          const leaverId = data.playerId;
+          setActiveRoom((prev) => {
+            if (!prev) return prev;
+            const remaining = prev.currentPlayers.filter((p) => p.id !== leaverId);
+            let newHostId = prev.hostId;
+            let newHostName = prev.hostName;
+            if (prev.hostId === leaverId && remaining.length > 0) {
+              remaining[0].isHost = true;
+              newHostId = remaining[0].id;
+              newHostName = remaining[0].nickname;
+            }
+            return {
+              ...prev,
+              hostId: newHostId,
+              hostName: newHostName,
+              currentPlayers: remaining,
+            };
+          });
+        } else if (type === 'TOGGLE_READY' && data?.playerId !== undefined) {
+          setActiveRoom((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              currentPlayers: prev.currentPlayers.map((p) =>
+                p.id === data.playerId ? { ...p, isReady: data.isReady } : p
+              ),
+            };
+          });
+        } else if (type === 'PLAYER_COLOR_CHANGED' && data?.playerId && data?.avatarColor) {
+          setActiveRoom((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              currentPlayers: prev.currentPlayers.map((p) =>
+                p.id === data.playerId ? { ...p, avatarColor: data.avatarColor } : p
+              ),
+            };
+          });
+        } else if (type === 'START_GAME') {
+          setActiveRoom((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              status: 'PLAYING',
+              round: 1,
+              currentTurnIndex: 0,
+              wordChain: [],
+              usedWords: [],
+              lastWord: undefined,
+              turnDuration: 15.0,
+              currentPlayers: prev.currentPlayers.map((p) => ({
+                ...p,
+                isAlive: true,
+                score: 0,
+                wordsUsed: [],
+              })),
+            };
+          });
+          sounds.playGameStart();
+        } else if (type === 'SUBMIT_WORD' && data?.item) {
+          const newItem: WordChainItem = data.item;
+          setActiveRoom((prev) => {
+            if (!prev) return prev;
+            const exists = prev.usedWords.includes(newItem.word);
+            if (exists) return prev;
+
+            const newUsed = [...prev.usedWords, newItem.word];
+            const newChain = [...prev.wordChain, newItem];
+            const newDuration = Math.max(5.0, Number((15.0 - newChain.length * 0.2).toFixed(1)));
+
+            const updatedPlayers = prev.currentPlayers.map((p) => {
+              if (p.id === newItem.playerId) {
+                return {
+                  ...p,
+                  score: p.score + newItem.word.length * 10 + (newItem.isDueum ? 15 : 0),
+                  wordsUsed: [...p.wordsUsed, newItem.word],
+                };
+              }
+              return p;
+            });
+
+            const alive = updatedPlayers.filter((p) => p.isAlive);
+            let nextIdx = prev.currentTurnIndex;
+            if (alive.length > 1) {
+              nextIdx = (prev.currentTurnIndex + 1) % updatedPlayers.length;
+              while (!updatedPlayers[nextIdx].isAlive) {
+                nextIdx = (nextIdx + 1) % updatedPlayers.length;
+              }
+            }
+
+            return {
+              ...prev,
+              lastWord: newItem.word,
+              usedWords: newUsed,
+              wordChain: newChain,
+              turnDuration: newDuration,
+              currentTurnIndex: nextIdx,
+              currentPlayers: updatedPlayers,
+            };
+          });
+          sounds.playCorrect();
+        } else if (type === 'PLAYER_TIMEOUT' && data?.targetPlayerId) {
+          setActiveRoom((prev) => {
+            if (!prev) return prev;
+            const updatedPlayers = prev.currentPlayers.map((p) =>
+              p.id === data.targetPlayerId ? { ...p, isAlive: false, eliminatedReason: '시간 초과' } : p
+            );
+            const alive = updatedPlayers.filter((p) => p.isAlive);
+            let nextStatus = prev.status;
+            let nextIdx = prev.currentTurnIndex;
+
+            if (alive.length <= 1 && updatedPlayers.length > 1) {
+              nextStatus = 'FINISHED';
+              setIsGameOverOpen(true);
+            } else if (alive.length > 0) {
+              nextIdx = (prev.currentTurnIndex + 1) % updatedPlayers.length;
+              while (!updatedPlayers[nextIdx].isAlive) {
+                nextIdx = (nextIdx + 1) % updatedPlayers.length;
+              }
+            }
+
+            return {
+              ...prev,
+              status: nextStatus,
+              currentPlayers: updatedPlayers,
+              currentTurnIndex: nextIdx,
+            };
+          });
+          sounds.playTimeout();
         } else if (type === 'CHAT_MESSAGE' && data?.message) {
           setChatMessages((prev) => {
             if (prev.some((m) => m.id === data.message.id)) return prev;
             return [...prev, data.message];
           });
         } else if (type === 'REQUEST_SYNC') {
-          if (activeRoom.hostId === myPlayerId) {
-            broadcastRoomEvent('SYNC_ROOM', { room: activeRoom });
+          if (activeRoomRef.current?.hostId === myPlayerId) {
+            broadcastRoomEvent('SYNC_ROOM', { room: activeRoomRef.current });
           }
         }
       })
@@ -348,10 +542,36 @@ export function App() {
             id: myPlayerId,
             nickname: userStats.nickname,
             avatarColor: userStats.avatarColor,
-            isHost: activeRoom.hostId === myPlayerId,
-            isReady: activeRoom.hostId === myPlayerId,
+            isHost: activeRoomRef.current?.hostId === myPlayerId,
+            isReady: activeRoomRef.current?.hostId === myPlayerId,
             joinedAt: Date.now(),
           });
+
+          // Send PLAYER_JOINED broadcast with my info if guest
+          if (activeRoomRef.current?.hostId !== myPlayerId) {
+            channel.send({
+              type: 'broadcast',
+              event: 'game_event',
+              payload: {
+                type: 'PLAYER_JOINED',
+                data: {
+                  player: {
+                    id: myPlayerId,
+                    nickname: userStats.nickname,
+                    avatarColor: userStats.avatarColor,
+                    isHost: false,
+                    isReady: false,
+                    isAlive: true,
+                    score: 0,
+                    wordsUsed: [],
+                    level: userStats.level,
+                  },
+                },
+                senderId: myPlayerId,
+                timestamp: Date.now(),
+              },
+            });
+          }
 
           // Request authoritative room sync from host immediately
           channel.send({
@@ -367,16 +587,20 @@ export function App() {
     return () => {
       channel.unsubscribe();
     };
-  }, [activeRoom?.id, activeRoom?.hostId]);
+  }, [activeRoom?.id]);
 
   // Broadcast helper
   const broadcastRoomEvent = (type: string, data: any) => {
     if (channelRef.current) {
-      channelRef.current.send({
-        type: 'broadcast',
-        event: 'game_event',
-        payload: { type, data, senderId: myPlayerId, timestamp: Date.now() },
-      });
+      try {
+        channelRef.current.send({
+          type: 'broadcast',
+          event: 'game_event',
+          payload: { type, data, senderId: myPlayerId, timestamp: Date.now() },
+        });
+      } catch (err) {
+        console.warn('Broadcast send error:', err);
+      }
     }
   };
 

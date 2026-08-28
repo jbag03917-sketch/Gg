@@ -64,11 +64,12 @@ export const GameRoomsView: React.FC<GameRoomsViewProps> = ({
       <div className="bg-white rounded-3xl border border-slate-200 shadow-xs p-5 sm:p-6 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2 mb-1">
-            <span className="px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-700 text-xs font-extrabold flex items-center gap-1">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              실시간 온라인
+            <span className="px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-700 text-xs font-extrabold flex items-center gap-1.5 shadow-2xs">
+              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
+              <span className="w-2 h-2 rounded-full bg-emerald-500 -ml-3.5" />
+              실시간 자동 갱신
             </span>
-            <span className="text-xs text-slate-400 font-medium">Supabase 실시간 동기화</span>
+            <span className="text-xs text-slate-400 font-medium hidden sm:inline">Supabase Realtime + SSE 듀얼 동기화</span>
           </div>
           <h1 className="text-2xl sm:text-3xl font-black tracking-tight text-[#1e2022]">
             끝말잇기 대기실 & 방 목록
@@ -91,7 +92,7 @@ export const GameRoomsView: React.FC<GameRoomsViewProps> = ({
             type="text"
             maxLength={6}
             value={directCode}
-            onChange={(e) => setDirectCode(e.target.value.trim())}
+            onChange={(e) => setDirectCode(e.target.value.trim().toUpperCase())}
             placeholder="6자리 코드"
             className="w-28 px-2.5 py-2 text-center text-xs font-mono font-bold uppercase rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-purple-500"
           />
@@ -145,7 +146,7 @@ export const GameRoomsView: React.FC<GameRoomsViewProps> = ({
                 }}
                 disabled={isRefreshing}
                 className="p-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 transition-colors flex items-center gap-1 text-xs font-bold cursor-pointer"
-                title="방 목록 새로고침"
+                title="방 목록 즉시 새로고침"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? 'animate-spin text-purple-600' : ''}`} />
                 <span className="hidden sm:inline">새로고침</span>

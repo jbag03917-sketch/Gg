@@ -79,11 +79,11 @@ function broadcastToLobby(event: string, data: any) {
 // Find room by code helper (trimmed, case-insensitive)
 function findRoom(roomId: string): ServerGameRoom | undefined {
   if (!roomId) return undefined;
-  const cleaned = roomId.trim().toLowerCase();
-  const direct = activeRoomsMap.get(cleaned) || activeRoomsMap.get(roomId.trim());
+  const cleaned = String(roomId).trim().toUpperCase();
+  const direct = activeRoomsMap.get(cleaned);
   if (direct) return direct;
   for (const [id, room] of activeRoomsMap.entries()) {
-    if (id.trim().toLowerCase() === cleaned) {
+    if (String(id).trim().toUpperCase() === cleaned) {
       return room;
     }
   }
@@ -186,12 +186,15 @@ app.get('/api/rooms/:id/stream', (req, res) => {
 
 // API: Create new room
 app.post('/api/rooms/create', (req, res) => {
-  const { title, maxPlayers, isPublic, hostPlayer } = req.body;
+  const { roomId: requestedRoomId, title, maxPlayers, isPublic, hostPlayer } = req.body;
   if (!hostPlayer || !hostPlayer.id) {
     return res.status(400).json({ error: '호스트 정보가 누락되었습니다.' });
   }
 
-  const roomId = Math.floor(100000 + Math.random() * 900000).toString();
+  const roomId = requestedRoomId
+    ? String(requestedRoomId).trim().toUpperCase()
+    : Math.random().toString(36).substring(2, 8).toUpperCase();
+
   const newRoom: ServerGameRoom = {
     id: roomId,
     title: title || `${hostPlayer.nickname}님의 방`,
@@ -232,7 +235,7 @@ app.post('/api/rooms/save', (req, res) => {
     return res.status(400).json({ error: 'Missing room data' });
   }
 
-  const roomId = room.id.trim();
+  const roomId = String(room.id).trim().toUpperCase();
   const existing = findRoom(roomId);
   const updatedRoom: ServerGameRoom = {
     ...room,
@@ -255,7 +258,7 @@ app.post('/api/rooms/join', (req, res) => {
     return res.status(400).json({ error: '방 코드와 플레이어 정보가 필요합니다.' });
   }
 
-  const cleanId = String(roomId).trim();
+  const cleanId = String(roomId).trim().toUpperCase();
   let room = findRoom(cleanId);
   if (!room) {
     return res.status(404).json({ error: `방 코드 [${cleanId}]에 해당하는 대기실을 찾을 수 없습니다.` });

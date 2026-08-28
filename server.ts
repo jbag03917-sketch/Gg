@@ -45,31 +45,184 @@ interface ServerGameRoom {
 
 const activeRoomsMap = new Map<string, ServerGameRoom>();
 
-// Clean up stale rooms (older than 30 minutes without update)
+// SSE Connected Clients Map
+const roomSseClientsMap = new Map<string, Set<express.Response>>();
+const lobbySseClients = new Set<express.Response>();
+
+// Broadcast to room clients
+function broadcastToRoom(roomId: string, event: string, data: any) {
+  const clients = roomSseClientsMap.get(roomId);
+  if (!clients || clients.size === 0) return;
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of clients) {
+    try {
+      client.write(payload);
+    } catch {
+      clients.delete(client);
+    }
+  }
+}
+
+// Broadcast to lobby clients
+function broadcastToLobby(event: string, data: any) {
+  if (lobbySseClients.size === 0) return;
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of lobbySseClients) {
+    try {
+      client.write(payload);
+    } catch {
+      lobbySseClients.delete(client);
+    }
+  }
+}
+
+// Find room by code helper (trimmed, case-insensitive)
+function findRoom(roomId: string): ServerGameRoom | undefined {
+  if (!roomId) return undefined;
+  const cleaned = roomId.trim().toLowerCase();
+  const direct = activeRoomsMap.get(cleaned) || activeRoomsMap.get(roomId.trim());
+  if (direct) return direct;
+  for (const [id, room] of activeRoomsMap.entries()) {
+    if (id.trim().toLowerCase() === cleaned) {
+      return room;
+    }
+  }
+  return undefined;
+}
+
+// Clean up stale rooms (older than 2 hours without update)
 setInterval(() => {
   const now = Date.now();
   for (const [id, room] of activeRoomsMap.entries()) {
-    if (now - (room.lastUpdated || room.createdAt) > 30 * 60 * 1000) {
+    if (now - (room.lastUpdated || room.createdAt) > 2 * 60 * 60 * 1000) {
       activeRoomsMap.delete(id);
+      broadcastToLobby('ROOMS_UPDATED', { rooms: getPublicRoomsList() });
     }
   }
 }, 60000);
 
-// API: List all active public rooms
-app.get('/api/rooms', (req, res) => {
-  const rooms = Array.from(activeRoomsMap.values()).filter(
+function getPublicRoomsList() {
+  return Array.from(activeRoomsMap.values()).filter(
     (r) => r.isPublic && r.status !== 'FINISHED'
   );
-  res.json({ rooms });
+}
+
+// API: List all active public rooms
+app.get('/api/rooms', (req, res) => {
+  res.json({ rooms: getPublicRoomsList() });
+});
+
+// API: SSE Stream for Lobby Room List
+app.get('/api/rooms/stream', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  lobbySseClients.add(res);
+  res.write(`event: ROOMS_UPDATED\ndata: ${JSON.stringify({ rooms: getPublicRoomsList() })}\n\n`);
+
+  const keepAlive = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      clearInterval(keepAlive);
+      lobbySseClients.delete(res);
+    }
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    lobbySseClients.delete(res);
+  });
 });
 
 // API: Get specific room by ID
 app.get('/api/rooms/:id', (req, res) => {
-  const room = activeRoomsMap.get(req.params.id);
+  const room = findRoom(req.params.id);
   if (!room) {
     return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
   }
   res.json({ room });
+});
+
+// API: SSE Stream for specific room
+app.get('/api/rooms/:id/stream', (req, res) => {
+  const roomId = req.params.id.trim();
+  const room = findRoom(roomId);
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  if (!roomSseClientsMap.has(roomId)) {
+    roomSseClientsMap.set(roomId, new Set());
+  }
+  const clientSet = roomSseClientsMap.get(roomId)!;
+  clientSet.add(res);
+
+  if (room) {
+    res.write(`event: SYNC_ROOM\ndata: ${JSON.stringify({ room })}\n\n`);
+  }
+
+  const keepAlive = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      clearInterval(keepAlive);
+      clientSet.delete(res);
+    }
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    clientSet.delete(res);
+    if (clientSet.size === 0) {
+      roomSseClientsMap.delete(roomId);
+    }
+  });
+});
+
+// API: Create new room
+app.post('/api/rooms/create', (req, res) => {
+  const { title, maxPlayers, isPublic, hostPlayer } = req.body;
+  if (!hostPlayer || !hostPlayer.id) {
+    return res.status(400).json({ error: '호스트 정보가 누락되었습니다.' });
+  }
+
+  const roomId = Math.floor(100000 + Math.random() * 900000).toString();
+  const newRoom: ServerGameRoom = {
+    id: roomId,
+    title: title || `${hostPlayer.nickname}님의 방`,
+    hostId: hostPlayer.id,
+    hostName: hostPlayer.nickname,
+    status: 'WAITING',
+    currentPlayers: [
+      {
+        ...hostPlayer,
+        isHost: true,
+        isReady: true,
+        isAlive: true,
+        score: 0,
+        wordsUsed: [],
+      },
+    ],
+    maxPlayers: maxPlayers || 8,
+    isPublic: isPublic !== false,
+    turnDuration: 15.0, // Starts at 15.0s, decreases by 0.2s down to 5.0s
+    round: 1,
+    currentTurnIndex: 0,
+    usedWords: [],
+    wordChain: [],
+    lastUpdated: Date.now(),
+    createdAt: Date.now(),
+  };
+
+  activeRoomsMap.set(roomId, newRoom);
+  broadcastToLobby('ROOMS_UPDATED', { rooms: getPublicRoomsList() });
+
+  res.json({ success: true, room: newRoom });
 });
 
 // API: Save or Update full room state
@@ -79,26 +232,33 @@ app.post('/api/rooms/save', (req, res) => {
     return res.status(400).json({ error: 'Missing room data' });
   }
 
-  const existing = activeRoomsMap.get(room.id);
-  activeRoomsMap.set(room.id, {
+  const roomId = room.id.trim();
+  const existing = findRoom(roomId);
+  const updatedRoom: ServerGameRoom = {
     ...room,
+    id: roomId,
     lastUpdated: Date.now(),
     createdAt: existing?.createdAt || room.createdAt || Date.now(),
-  });
+  };
 
-  res.json({ success: true, room: activeRoomsMap.get(room.id) });
+  activeRoomsMap.set(roomId, updatedRoom);
+  broadcastToRoom(roomId, 'SYNC_ROOM', { room: updatedRoom });
+  broadcastToLobby('ROOMS_UPDATED', { rooms: getPublicRoomsList() });
+
+  res.json({ success: true, room: updatedRoom });
 });
 
 // API: Join room on server
 app.post('/api/rooms/join', (req, res) => {
   const { roomId, player } = req.body;
   if (!roomId || !player || !player.id) {
-    return res.status(400).json({ error: '잘못된 요청 파라미터입니다.' });
+    return res.status(400).json({ error: '방 코드와 플레이어 정보가 필요합니다.' });
   }
 
-  let room = activeRoomsMap.get(roomId);
+  const cleanId = String(roomId).trim();
+  let room = findRoom(cleanId);
   if (!room) {
-    return res.status(404).json({ error: '존재하지 않거나 종료된 방입니다.' });
+    return res.status(404).json({ error: `방 코드 [${cleanId}]에 해당하는 대기실을 찾을 수 없습니다.` });
   }
 
   if (room.status === 'PLAYING') {
@@ -131,7 +291,126 @@ app.post('/api/rooms/join', (req, res) => {
   }
 
   room.lastUpdated = Date.now();
-  activeRoomsMap.set(roomId, room);
+  activeRoomsMap.set(room.id, room);
+
+  broadcastToRoom(room.id, 'SYNC_ROOM', { room });
+  broadcastToRoom(room.id, 'CHAT_MESSAGE', {
+    message: {
+      id: 'sys_' + Date.now(),
+      senderId: 'SYSTEM',
+      senderName: '시스템',
+      text: `${player.nickname || '손님'}님이 방에 입장하셨습니다.`,
+      timestamp: Date.now(),
+      isSystem: true,
+    },
+  });
+  broadcastToLobby('ROOMS_UPDATED', { rooms: getPublicRoomsList() });
+
+  res.json({ success: true, room });
+});
+
+// API: Execute in-room action (Ready, Start, SubmitWord, Timeout, Chat, Leave)
+app.post('/api/rooms/:id/action', (req, res) => {
+  const roomId = req.params.id.trim();
+  const { action, payload, senderId } = req.body;
+  const room = findRoom(roomId);
+
+  if (!room) {
+    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+
+  if (action === 'TOGGLE_READY') {
+    room.currentPlayers = room.currentPlayers.map((p) =>
+      p.id === senderId ? { ...p, isReady: !p.isReady } : p
+    );
+  } else if (action === 'START_GAME') {
+    if (room.hostId === senderId) {
+      room.status = 'PLAYING';
+      room.round = 1;
+      room.currentTurnIndex = 0;
+      room.wordChain = [];
+      room.usedWords = [];
+      room.lastWord = undefined;
+      room.turnDuration = 15.0;
+      room.currentPlayers = room.currentPlayers.map((p) => ({
+        ...p,
+        isAlive: true,
+        score: 0,
+        wordsUsed: [],
+      }));
+    }
+  } else if (action === 'SUBMIT_WORD') {
+    const { word, isDueum, matchedChar, definition, pos, playerName, playerColor } = payload;
+    if (word && !room.usedWords.includes(word)) {
+      const newItem = {
+        id: 'w_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5),
+        word,
+        playerId: senderId,
+        playerName: playerName || '플레이어',
+        playerColor: playerColor || 'white',
+        isDueum: !!isDueum,
+        matchedChar: matchedChar || word[0],
+        definition: definition || '',
+        pos: pos || '명사',
+        timestamp: Date.now(),
+      };
+
+      room.wordChain.push(newItem);
+      room.usedWords.push(word);
+      room.lastWord = word;
+
+      // Calculate dynamic turn duration: 15.0s -> 5.0s (-0.2s each word)
+      const newDuration = Math.max(5.0, Number((15.0 - (room.wordChain.length * 0.2)).toFixed(1)));
+      room.turnDuration = newDuration;
+
+      // Update player score & wordsUsed
+      room.currentPlayers = room.currentPlayers.map((p) => {
+        if (p.id === senderId) {
+          return {
+            ...p,
+            score: p.score + word.length * 10 + (isDueum ? 15 : 0),
+            wordsUsed: [...p.wordsUsed, word],
+          };
+        }
+        return p;
+      });
+
+      // Advance turn index to next alive player
+      const alivePlayers = room.currentPlayers.filter((p) => p.isAlive);
+      if (alivePlayers.length > 1) {
+        let nextIdx = (room.currentTurnIndex + 1) % room.currentPlayers.length;
+        while (!room.currentPlayers[nextIdx].isAlive) {
+          nextIdx = (nextIdx + 1) % room.currentPlayers.length;
+        }
+        room.currentTurnIndex = nextIdx;
+      }
+    }
+  } else if (action === 'PLAYER_TIMEOUT') {
+    const { targetPlayerId } = payload;
+    room.currentPlayers = room.currentPlayers.map((p) =>
+      p.id === targetPlayerId ? { ...p, isAlive: false, eliminatedReason: '시간 초과 (5초 경과)' } : p
+    );
+
+    const alive = room.currentPlayers.filter((p) => p.isAlive);
+    if (alive.length <= 1 && room.currentPlayers.length > 1) {
+      room.status = 'FINISHED';
+    } else if (alive.length > 0) {
+      let nextIdx = (room.currentTurnIndex + 1) % room.currentPlayers.length;
+      while (!room.currentPlayers[nextIdx].isAlive) {
+        nextIdx = (nextIdx + 1) % room.currentPlayers.length;
+      }
+      room.currentTurnIndex = nextIdx;
+    }
+  } else if (action === 'CHAT_MESSAGE') {
+    broadcastToRoom(room.id, 'CHAT_MESSAGE', { message: payload });
+    return res.json({ success: true });
+  }
+
+  room.lastUpdated = Date.now();
+  activeRoomsMap.set(room.id, room);
+
+  broadcastToRoom(room.id, 'SYNC_ROOM', { room });
+  broadcastToLobby('ROOMS_UPDATED', { rooms: getPublicRoomsList() });
 
   res.json({ success: true, room });
 });
@@ -143,11 +422,13 @@ app.post('/api/rooms/leave', (req, res) => {
     return res.status(400).json({ error: 'Missing parameters' });
   }
 
-  const room = activeRoomsMap.get(roomId);
+  const room = findRoom(roomId);
   if (room) {
+    const leavingPlayer = room.currentPlayers.find((p) => p.id === playerId);
     room.currentPlayers = room.currentPlayers.filter((p) => p.id !== playerId);
+
     if (room.currentPlayers.length === 0) {
-      activeRoomsMap.delete(roomId);
+      activeRoomsMap.delete(room.id);
     } else {
       // Transfer host if host left
       if (room.hostId === playerId && room.currentPlayers.length > 0) {
@@ -156,40 +437,25 @@ app.post('/api/rooms/leave', (req, res) => {
         room.hostName = room.currentPlayers[0].nickname;
       }
       room.lastUpdated = Date.now();
-      activeRoomsMap.set(roomId, room);
+      activeRoomsMap.set(room.id, room);
+
+      broadcastToRoom(room.id, 'SYNC_ROOM', { room });
+      if (leavingPlayer) {
+        broadcastToRoom(room.id, 'CHAT_MESSAGE', {
+          message: {
+            id: 'sys_' + Date.now(),
+            senderId: 'SYSTEM',
+            senderName: '시스템',
+            text: `${leavingPlayer.nickname}님이 퇴장하셨습니다.`,
+            timestamp: Date.now(),
+            isSystem: true,
+          },
+        });
+      }
     }
+    broadcastToLobby('ROOMS_UPDATED', { rooms: getPublicRoomsList() });
   }
 
-  res.json({ success: true });
-});
-
-// API: Backward compatible update endpoint
-app.post('/api/rooms/update', (req, res) => {
-  const { id, title, hostName, playerCount, maxPlayers, status, isPublic } = req.body;
-  if (!id || !title) {
-    return res.status(400).json({ error: 'Missing room parameters' });
-  }
-
-  const existing = activeRoomsMap.get(id);
-  if (existing) {
-    existing.title = title;
-    existing.hostName = hostName || existing.hostName;
-    existing.maxPlayers = maxPlayers || existing.maxPlayers;
-    existing.status = status || existing.status;
-    existing.isPublic = isPublic !== false;
-    existing.lastUpdated = Date.now();
-    activeRoomsMap.set(id, existing);
-  }
-
-  res.json({ success: true });
-});
-
-// API: Remove active room
-app.post('/api/rooms/remove', (req, res) => {
-  const { id } = req.body;
-  if (id) {
-    activeRoomsMap.delete(id);
-  }
   res.json({ success: true });
 });
 

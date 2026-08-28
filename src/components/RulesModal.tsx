@@ -50,7 +50,7 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose }) => {
               </div>
               <div className="bg-white p-2 rounded-xl border border-purple-200/60">
                 <div className="text-[10px] text-slate-400 font-semibold">제한 시간</div>
-                <div className="font-bold text-rose-600">5초 / 턴</div>
+                <div className="font-bold text-rose-600 text-[11px]">15.0s → 5.0s (-0.2s/턴)</div>
               </div>
               <div className="bg-white p-2 rounded-xl border border-purple-200/60">
                 <div className="text-[10px] text-slate-400 font-semibold">최소 단어</div>
@@ -132,7 +132,7 @@ export const RulesModal: React.FC<RulesModalProps> = ({ isOpen, onClose }) => {
             <ul className="space-y-1.5 text-slate-600 bg-rose-50/50 p-3.5 rounded-xl border border-rose-100">
               <li className="flex items-center gap-2">
                 <span className="text-rose-500 font-bold">✕</span>
-                <span><b>5초 제한 시간 초과</b> 시 즉시 탈락</span>
+                <span><b>타임어택 제한 시간 초과 (15.0초~최저 5.0초)</b> 시 즉시 탈락</span>
               </li>
               <li className="flex items-center gap-2">
                 <span className="text-rose-500 font-bold">✕</span>

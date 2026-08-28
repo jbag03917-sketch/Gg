@@ -32,8 +32,12 @@ export const GameView: React.FC<GameViewProps> = ({
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState('');
 
-  // 5-second countdown timer state
-  const [timeLeft, setTimeLeft] = useState<number>(5.0);
+  // Dynamic Turn Duration: Starts at 15.0s, reduces by 0.2s per word in chain, min 5.0s
+  const currentChainLength = room.wordChain ? room.wordChain.length : 0;
+  const maxTurnDuration = Math.max(5.0, Number((15.0 - currentChainLength * 0.2).toFixed(1)));
+
+  // Countdown timer state
+  const [timeLeft, setTimeLeft] = useState<number>(maxTurnDuration);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -60,6 +64,7 @@ export const GameView: React.FC<GameViewProps> = ({
       return;
     }
 
+    const botDelay = Math.max(1000, Math.min(maxTurnDuration * 0.45 * 1000, 2800));
     const botTimer = setTimeout(() => {
       const lastChar = room.lastWord ? room.lastWord[room.lastWord.length - 1] : null;
       const validChars = lastChar ? getValidStartingChars(lastChar) : [];
@@ -93,28 +98,28 @@ export const GameView: React.FC<GameViewProps> = ({
           );
         }
       }
-    }, 1800);
+    }, botDelay);
 
     return () => clearTimeout(botTimer);
-  }, [room.currentTurnIndex, activePlayer?.id, room.hostId, currentPlayerId]);
+  }, [room.currentTurnIndex, activePlayer?.id, room.hostId, currentPlayerId, maxTurnDuration]);
 
-  // Turn Countdown Timer (Authoritative Client Sync)
+  // Turn Countdown Timer (Dynamic 15.0s -> 5.0s with 0.2s decrement per turn)
   useEffect(() => {
-    setTimeLeft(5.0);
+    setTimeLeft(maxTurnDuration);
     setValidationError(null);
 
     if (timerRef.current) clearInterval(timerRef.current);
 
     const startTime = Date.now();
-    const duration = 5000; // 5 seconds
+    const durationMs = maxTurnDuration * 1000;
 
     timerRef.current = setInterval(() => {
       const elapsed = Date.now() - startTime;
-      const remaining = Math.max(0, (duration - elapsed) / 1000);
+      const remaining = Math.max(0, (durationMs - elapsed) / 1000);
       setTimeLeft(remaining);
 
-      // Play tick sound when urgent
-      if (remaining <= 2.0 && remaining > 0) {
+      // Play tick sound when urgent (<= 2.5s or <= 30% time)
+      if (remaining <= Math.min(2.5, maxTurnDuration * 0.3) && remaining > 0) {
         sounds.playTick(true);
       }
 
@@ -130,7 +135,7 @@ export const GameView: React.FC<GameViewProps> = ({
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [room.currentTurnIndex, activePlayer?.id]);
+  }, [room.currentTurnIndex, activePlayer?.id, currentChainLength, maxTurnDuration]);
 
   // Handle word submission
   const handleSubmit = async (e: React.FormEvent) => {
@@ -279,24 +284,25 @@ export const GameView: React.FC<GameViewProps> = ({
               )}
             </div>
 
-            {/* 5.0s Progress Bar (Image 3 style) */}
+            {/* Dynamic Countdown Progress Bar */}
             <div className="w-full max-w-md mt-4">
               <div className="flex justify-between items-center text-xs font-extrabold mb-1">
-                <span className={`transition-colors ${timeLeft <= 2 ? 'text-rose-400 animate-pulse' : 'text-amber-200'}`}>
-                  남은 시간
+                <span className={`flex items-center gap-1.5 transition-colors ${timeLeft <= Math.min(2.5, maxTurnDuration * 0.3) ? 'text-rose-400 animate-pulse' : 'text-amber-200'}`}>
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                  남은 시간 <span className="text-[10px] text-amber-300/80 font-normal">(제한: {maxTurnDuration.toFixed(1)}s / -0.2s)</span>
                 </span>
-                <span className={`font-mono text-sm font-black ${timeLeft <= 2 ? 'text-rose-400 animate-pulse' : 'text-amber-300'}`}>
+                <span className={`font-mono text-sm font-black ${timeLeft <= Math.min(2.5, maxTurnDuration * 0.3) ? 'text-rose-400 animate-pulse' : 'text-amber-300'}`}>
                   {timeLeft.toFixed(1)}s
                 </span>
               </div>
               <div className="w-full h-3 bg-black/60 rounded-full overflow-hidden p-0.5 border border-amber-900/50">
                 <div
                   className={`h-full rounded-full transition-all duration-100 ${
-                    timeLeft <= 2
+                    timeLeft <= Math.min(2.5, maxTurnDuration * 0.3)
                       ? 'bg-gradient-to-r from-rose-600 to-red-500 shadow-lg shadow-rose-500/50'
                       : 'bg-gradient-to-r from-amber-400 to-yellow-300 shadow-md shadow-amber-400/30'
                   }`}
-                  style={{ width: `${(timeLeft / 5) * 100}%` }}
+                  style={{ width: `${Math.min(100, Math.max(0, (timeLeft / maxTurnDuration) * 100))}%` }}
                 />
               </div>
             </div>

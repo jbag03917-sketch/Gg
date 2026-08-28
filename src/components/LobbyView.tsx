@@ -98,6 +98,10 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
           <span className="px-2.5 py-0.5 rounded-full bg-purple-100 text-purple-700 font-bold text-xs">
             한국어 끝말잇기
           </span>
+          <span className="px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold text-xs flex items-center gap-1">
+            <span>⏱️ 15.0초 → 5.0초</span>
+            <span className="text-[10px] text-amber-600 font-normal">(-0.2s/턴)</span>
+          </span>
         </div>
 
         {/* Action Controls */}

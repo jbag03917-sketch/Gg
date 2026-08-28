@@ -135,7 +135,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
               <button
                 onClick={() => {
                   sounds.playPop();
-                  onCreateRoom();
+                  onSelectTab('GAME');
                 }}
                 className="relative z-10 w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-purple-700 to-indigo-800 hover:from-purple-800 hover:to-indigo-900 text-white font-bold text-sm flex items-center justify-between shadow-xs transition-transform active:scale-[0.98] cursor-pointer"
               >
@@ -163,7 +163,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
               <button
                 onClick={() => {
                   sounds.playPop();
-                  onOpenPublicRooms();
+                  onSelectTab('GAME');
                 }}
                 className="relative z-10 w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white font-bold text-sm flex items-center justify-between shadow-xs transition-transform active:scale-[0.98] cursor-pointer"
               >

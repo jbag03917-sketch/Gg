@@ -4,7 +4,7 @@ import { Send, MessageCircle, AlertCircle, CheckCircle2, XCircle, BookOpen, Volu
 import { GameRoom, Player, ChatMessage, WordChainItem } from '../types';
 import { MascotAvatar } from './MascotAvatar';
 import { validateWordRules, getValidStartingChars } from '../lib/hangulRules';
-import { checkWordInDictionary } from '../lib/dictionaryData';
+import { checkWordInDictionary, DICTIONARY_DATABASE } from '../lib/dictionaryData';
 import { sounds } from '../lib/soundEffects';
 
 interface GameViewProps {
@@ -49,6 +49,54 @@ export const GameView: React.FC<GameViewProps> = ({
       }, 50);
     }
   }, [isMyTurn, room.currentTurnIndex]);
+
+  // Automated bot turn logic (Host executes for bot players)
+  useEffect(() => {
+    if (!activePlayer || !activePlayer.id.startsWith('bot_') || !activePlayer.isAlive) {
+      return;
+    }
+    // Only host triggers bot turn to avoid duplicate submissions
+    if (room.hostId !== currentPlayerId) {
+      return;
+    }
+
+    const botTimer = setTimeout(() => {
+      const lastChar = room.lastWord ? room.lastWord[room.lastWord.length - 1] : null;
+      const validChars = lastChar ? getValidStartingChars(lastChar) : [];
+
+      let candidate: any = null;
+      if (!room.lastWord) {
+        const starters = DICTIONARY_DATABASE.filter((w) => w.word.length >= 2);
+        candidate = starters[Math.floor(Math.random() * starters.length)];
+      } else {
+        const available = DICTIONARY_DATABASE.filter(
+          (w) =>
+            w.word.length >= 2 &&
+            validChars.includes(w.word[0]) &&
+            !room.usedWords.includes(w.word)
+        );
+        if (available.length > 0) {
+          candidate = available[Math.floor(Math.random() * available.length)];
+        }
+      }
+
+      if (candidate) {
+        const ruleRes = validateWordRules(candidate.word, room.lastWord, room.usedWords);
+        if (ruleRes.valid) {
+          sounds.playCorrect();
+          onSubmitWord(
+            candidate.word,
+            ruleRes.isDueum ?? false,
+            ruleRes.matchedChar ?? candidate.word[0],
+            candidate.meaning,
+            candidate.pos
+          );
+        }
+      }
+    }, 1800);
+
+    return () => clearTimeout(botTimer);
+  }, [room.currentTurnIndex, activePlayer?.id, room.hostId, currentPlayerId]);
 
   // Turn Countdown Timer (Authoritative Client Sync)
   useEffect(() => {

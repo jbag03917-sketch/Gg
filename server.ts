@@ -10,31 +10,52 @@ app.use(express.json());
 // 국립국어원 표준국어대사전 Open API 기본 인증키 (서버 환경변수 우선 적용)
 const DEFAULT_STDICT_API_KEY = process.env.STDICT_API_KEY || '4AF7F0CC6C8C1EA6D482DA8D117613F4';
 
-// In-memory active public rooms registry
-interface ActiveRoomRecord {
+// In-memory active public rooms registry (Authoritative Server State)
+interface ServerPlayer {
   id: string;
-  title: string;
-  hostName: string;
-  playerCount: number;
-  maxPlayers: number;
-  status: string;
-  isPublic: boolean;
-  lastUpdated: number;
+  nickname: string;
+  avatarColor: string;
+  isHost: boolean;
+  isReady: boolean;
+  isAlive: boolean;
+  score: number;
+  wordsUsed: string[];
+  level: number;
+  eliminatedReason?: string;
 }
 
-const activeRoomsMap = new Map<string, ActiveRoomRecord>();
+interface ServerGameRoom {
+  id: string;
+  title: string;
+  hostId: string;
+  hostName: string;
+  status: 'WAITING' | 'PLAYING' | 'FINISHED';
+  currentPlayers: ServerPlayer[];
+  maxPlayers: number;
+  isPublic: boolean;
+  turnDuration: number;
+  round: number;
+  currentTurnIndex: number;
+  lastWord?: string;
+  usedWords: string[];
+  wordChain: any[];
+  lastUpdated: number;
+  createdAt: number;
+}
 
-// Clean up stale rooms (older than 10 minutes)
+const activeRoomsMap = new Map<string, ServerGameRoom>();
+
+// Clean up stale rooms (older than 30 minutes without update)
 setInterval(() => {
   const now = Date.now();
   for (const [id, room] of activeRoomsMap.entries()) {
-    if (now - room.lastUpdated > 10 * 60 * 1000) {
+    if (now - (room.lastUpdated || room.createdAt) > 30 * 60 * 1000) {
       activeRoomsMap.delete(id);
     }
   }
 }, 60000);
 
-// API: List real active public rooms
+// API: List all active public rooms
 app.get('/api/rooms', (req, res) => {
   const rooms = Array.from(activeRoomsMap.values()).filter(
     (r) => r.isPublic && r.status !== 'FINISHED'
@@ -42,23 +63,123 @@ app.get('/api/rooms', (req, res) => {
   res.json({ rooms });
 });
 
-// API: Register or update active room
+// API: Get specific room by ID
+app.get('/api/rooms/:id', (req, res) => {
+  const room = activeRoomsMap.get(req.params.id);
+  if (!room) {
+    return res.status(404).json({ error: '방을 찾을 수 없습니다.' });
+  }
+  res.json({ room });
+});
+
+// API: Save or Update full room state
+app.post('/api/rooms/save', (req, res) => {
+  const room = req.body as ServerGameRoom;
+  if (!room || !room.id) {
+    return res.status(400).json({ error: 'Missing room data' });
+  }
+
+  const existing = activeRoomsMap.get(room.id);
+  activeRoomsMap.set(room.id, {
+    ...room,
+    lastUpdated: Date.now(),
+    createdAt: existing?.createdAt || room.createdAt || Date.now(),
+  });
+
+  res.json({ success: true, room: activeRoomsMap.get(room.id) });
+});
+
+// API: Join room on server
+app.post('/api/rooms/join', (req, res) => {
+  const { roomId, player } = req.body;
+  if (!roomId || !player || !player.id) {
+    return res.status(400).json({ error: '잘못된 요청 파라미터입니다.' });
+  }
+
+  let room = activeRoomsMap.get(roomId);
+  if (!room) {
+    return res.status(404).json({ error: '존재하지 않거나 종료된 방입니다.' });
+  }
+
+  if (room.status === 'PLAYING') {
+    return res.status(400).json({ error: '이미 게임이 진행 중인 방입니다.' });
+  }
+
+  const exists = room.currentPlayers.some((p) => p.id === player.id);
+  if (!exists) {
+    if (room.currentPlayers.length >= room.maxPlayers) {
+      return res.status(400).json({ error: '방 인원이 가득 찼습니다 (만원).' });
+    }
+    room.currentPlayers.push({
+      id: player.id,
+      nickname: player.nickname || '손님',
+      avatarColor: player.avatarColor || 'white',
+      isHost: false,
+      isReady: false,
+      isAlive: true,
+      score: 0,
+      wordsUsed: [],
+      level: player.level || 1,
+    });
+  } else {
+    // Update player info if already exists
+    room.currentPlayers = room.currentPlayers.map((p) =>
+      p.id === player.id
+        ? { ...p, nickname: player.nickname || p.nickname, avatarColor: player.avatarColor || p.avatarColor }
+        : p
+    );
+  }
+
+  room.lastUpdated = Date.now();
+  activeRoomsMap.set(roomId, room);
+
+  res.json({ success: true, room });
+});
+
+// API: Leave room on server
+app.post('/api/rooms/leave', (req, res) => {
+  const { roomId, playerId } = req.body;
+  if (!roomId || !playerId) {
+    return res.status(400).json({ error: 'Missing parameters' });
+  }
+
+  const room = activeRoomsMap.get(roomId);
+  if (room) {
+    room.currentPlayers = room.currentPlayers.filter((p) => p.id !== playerId);
+    if (room.currentPlayers.length === 0) {
+      activeRoomsMap.delete(roomId);
+    } else {
+      // Transfer host if host left
+      if (room.hostId === playerId && room.currentPlayers.length > 0) {
+        room.currentPlayers[0].isHost = true;
+        room.hostId = room.currentPlayers[0].id;
+        room.hostName = room.currentPlayers[0].nickname;
+      }
+      room.lastUpdated = Date.now();
+      activeRoomsMap.set(roomId, room);
+    }
+  }
+
+  res.json({ success: true });
+});
+
+// API: Backward compatible update endpoint
 app.post('/api/rooms/update', (req, res) => {
   const { id, title, hostName, playerCount, maxPlayers, status, isPublic } = req.body;
   if (!id || !title) {
     return res.status(400).json({ error: 'Missing room parameters' });
   }
 
-  activeRoomsMap.set(id, {
-    id,
-    title,
-    hostName: hostName || '방장',
-    playerCount: playerCount || 1,
-    maxPlayers: maxPlayers || 8,
-    status: status || 'WAITING',
-    isPublic: isPublic !== false,
-    lastUpdated: Date.now(),
-  });
+  const existing = activeRoomsMap.get(id);
+  if (existing) {
+    existing.title = title;
+    existing.hostName = hostName || existing.hostName;
+    existing.maxPlayers = maxPlayers || existing.maxPlayers;
+    existing.status = status || existing.status;
+    existing.isPublic = isPublic !== false;
+    existing.lastUpdated = Date.now();
+    activeRoomsMap.set(id, existing);
+  }
 
   res.json({ success: true });
 });
